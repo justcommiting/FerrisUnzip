@@ -8,7 +8,7 @@ use sevenz_rust::{decompress_file_with_password, Password};
 use tar::Archive as TarArchive;
 use flate2::read::GzDecoder;
 use bzip2::read::BzDecoder;
-use xz2::read::XzDecoder;
+use liblzma::read::XzDecoder;
 use unrar::Archive;
 use std::io::Write;
 

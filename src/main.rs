@@ -53,6 +53,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .get_matches();
 
     let archive_path = matches.get_one::<String>("archive").unwrap();
+    
+    // Validate archive path early
+    if archive_path.is_empty() {
+        eprintln!("Error: Archive path cannot be empty");
+        std::process::exit(1);
+    }
+    
     let password = matches.get_one::<String>("password").map(|s| s.clone());
     let quiet = matches.get_flag("quiet");
 

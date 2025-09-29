@@ -11,8 +11,16 @@ use crate::{ExtractionConfig, progress::ExtractionProgress};
 
 /// Extract ZIP archive with parallel processing
 pub fn extract_parallel(archive_path: &str, extract_to: &str, config: &ExtractionConfig) -> Result<(), Box<dyn Error>> {
+    // Validate that the file exists and is not empty
+    let file_metadata = std::fs::metadata(archive_path)?;
+    if file_metadata.len() == 0 {
+        return Err("Archive file is empty".into());
+    }
+    
     let file = File::open(archive_path)?;
-    let mut archive = ZipArchive::new(file)?;
+    let mut archive = ZipArchive::new(file).map_err(|e| {
+        format!("Failed to open ZIP archive '{}': {}", archive_path, e)
+    })?;
     
     // Create extraction directory
     fs::create_dir_all(extract_to)?;
@@ -24,7 +32,13 @@ pub fn extract_parallel(archive_path: &str, extract_to: &str, config: &Extractio
     let mut files_to_extract = Vec::new();
     
     for i in 0..archive.len() {
-        let file = archive.by_index(i)?;
+        let file = match archive.by_index(i) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Warning: Failed to read file at index {}: {}", i, e);
+                continue;
+            }
+        };
         let file_name = file.name().to_string();
         let is_dir = file_name.ends_with('/');
         let compressed_size = file.compressed_size();
@@ -68,12 +82,20 @@ pub fn extract_parallel(archive_path: &str, extract_to: &str, config: &Extractio
             if let Ok(file) = File::open(archive_path) {
                 if let Ok(mut thread_archive) = ZipArchive::new(file) {
                     for &(index, ref file_name, _, _, _) in chunk {
-                        if let Err(e) = extract_single_file(&mut thread_archive, index, file_name, extract_to, config) {
-                            eprintln!("Failed to extract {}: {}", file_name, e);
+                        match extract_single_file(&mut thread_archive, index, file_name, extract_to, config) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                eprintln!("Failed to extract '{}': {}", file_name, e);
+                                // Continue with other files instead of panicking
+                            }
                         }
                         progress.increment();
                     }
+                } else {
+                    eprintln!("Failed to open archive for thread processing");
                 }
+            } else {
+                eprintln!("Failed to open file for thread processing");
             }
         });
     });
@@ -90,7 +112,10 @@ fn extract_single_file(
     extract_to: &str,
     config: &ExtractionConfig,
 ) -> Result<(), Box<dyn Error>> {
-    let mut file = archive.by_index(index)?;
+    let mut file = archive.by_index(index).map_err(|e| {
+        format!("Failed to access file '{}' at index {}: {}", file_name, index, e)
+    })?;
+    
     let outpath = Path::new(extract_to).join(file_name);
     
     // Ensure parent directories exist
@@ -98,19 +123,41 @@ fn extract_single_file(
         fs::create_dir_all(parent)?;
     }
     
-    let mut outfile = File::create(&outpath)?;
+    let mut outfile = File::create(&outpath).map_err(|e| {
+        format!("Failed to create output file '{}': {}", outpath.display(), e)
+    })?;
     
     // Use optimized buffer size based on file size
     let buffer_size = crate::utils::get_optimal_buffer_size(file.size(), config.buffer_size);
     
-    // Copy with custom buffer size
-    let mut buffer = vec![0u8; buffer_size];
+    // Add size validation to prevent extreme buffer sizes
+    let safe_buffer_size = buffer_size.min(1024 * 1024).max(4096); // Cap at 1MB, minimum 4KB
+    let mut buffer = vec![0u8; safe_buffer_size];
+    
+    // Copy with error handling for potential compression issues
+    let mut total_read = 0u64;
+    let max_size = file.size().saturating_add(1024); // Add some padding for safety
+    
     loop {
-        let bytes_read = io::Read::read(&mut file, &mut buffer)?;
-        if bytes_read == 0 {
-            break;
+        let bytes_read = match io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break, // EOF
+            Ok(n) => n,
+            Err(e) => {
+                return Err(format!("Failed to read from compressed file '{}': {}", file_name, e).into());
+            }
+        };
+        
+        total_read = total_read.saturating_add(bytes_read as u64);
+        
+        // Prevent reading indefinitely if there's a decompression issue
+        if total_read > max_size.saturating_mul(10) { // Allow up to 10x expansion
+            return Err(format!("File '{}' exceeded expected size during decompression (read {} bytes, expected <= {})", 
+                              file_name, total_read, max_size).into());
         }
-        io::Write::write_all(&mut outfile, &buffer[..bytes_read])?;
+        
+        if let Err(e) = io::Write::write_all(&mut outfile, &buffer[..bytes_read]) {
+            return Err(format!("Failed to write to output file '{}': {}", outpath.display(), e).into());
+        }
     }
     
     Ok(())

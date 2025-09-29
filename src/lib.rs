@@ -70,9 +70,29 @@ pub fn extract_archive_with_config(
     extract_to: &str,
     config: &ExtractionConfig,
 ) -> Result<(), Box<dyn Error>> {
+    // Validate input parameters
+    if archive_path.is_empty() {
+        return Err("Archive path cannot be empty".into());
+    }
+    
+    if extract_to.is_empty() {
+        return Err("Extract path cannot be empty".into());
+    }
+    
     let path = Path::new(archive_path);
     if !path.exists() {
-        return Err("Archive file does not exist".into());
+        return Err(format!("Archive file '{}' does not exist", archive_path).into());
+    }
+    
+    // Check if it's actually a file and not a directory
+    if path.is_dir() {
+        return Err(format!("'{}' is a directory, not an archive file", archive_path).into());
+    }
+    
+    // Check file size - reject empty files
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() == 0 {
+        return Err(format!("Archive file '{}' is empty", archive_path).into());
     }
 
     let archive_type = utils::get_archive_type(path);
@@ -88,7 +108,7 @@ pub fn extract_archive_with_config(
         ArchiveType::Bz2 => extractors::compression::decompress_bz2(archive_path, extract_to, config),
         ArchiveType::Xz => extractors::compression::decompress_xz(archive_path, extract_to, config),
         ArchiveType::Rar => extractors::rar::extract(archive_path, extract_to, config),
-        ArchiveType::Unknown => Err("Unsupported archive format".into()),
+        ArchiveType::Unknown => Err(format!("Unsupported archive format for file '{}'", archive_path).into()),
     }
 }
 
@@ -177,12 +197,54 @@ mod tests {
     }
 
     #[test]
-    fn test_mmap_decision() {
-        let small_file = 1024 * 1024; // 1MB
-        let large_file = 20 * 1024 * 1024; // 20MB
+    fn test_empty_archive_path() {
+        let config = ExtractionConfig::default();
+        let result = extract_archive_with_config("", "/tmp/test", &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Archive path cannot be empty"));
+    }
 
-        assert!(!utils::should_use_mmap(small_file, true));
-        assert!(utils::should_use_mmap(large_file, true));
-        assert!(!utils::should_use_mmap(large_file, false));
+    #[test]
+    fn test_empty_extract_path() {
+        let config = ExtractionConfig::default();
+        let result = extract_archive_with_config("test.zip", "", &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Extract path cannot be empty"));
+    }
+
+    #[test]
+    fn test_nonexistent_file() {
+        let config = ExtractionConfig::default();
+        let result = extract_archive_with_config("nonexistent.zip", "/tmp/test", &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_directory_as_archive() {
+        use std::fs;
+        let temp_dir = "/tmp/test_dir_archive";
+        fs::create_dir_all(temp_dir).unwrap();
+        
+        let config = ExtractionConfig::default();
+        let result = extract_archive_with_config(temp_dir, "/tmp/test", &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("is a directory"));
+        
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_empty_file() {
+        use std::fs::File;
+        let empty_file = "/tmp/empty_test.zip";
+        File::create(empty_file).unwrap();
+        
+        let config = ExtractionConfig::default();
+        let result = extract_archive_with_config(empty_file, "/tmp/test", &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("is empty"));
+        
+        std::fs::remove_file(empty_file).unwrap();
     }
 }

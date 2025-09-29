@@ -1,298 +1,170 @@
 use clap::{Arg, Command};
 use std::error::Error;
-use std::fs::{self, File};
-use std::io;
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use zip::ZipArchive;
-use sevenz_rust::{decompress_file_with_password, Password};
-use tar::Archive as TarArchive;
-use flate2::read::GzDecoder;
-use bzip2::read::BzDecoder;
-use liblzma::read::XzDecoder;
-use unrar::Archive;
-use std::io::Write;
-
-// Enum to represent supported archive types
-#[derive(Debug)]
-enum ArchiveType {
-    Zip,
-    SevenZ,
-    Tar,
-    TarGz,
-    TarBz2,
-    TarXz,
-    Gz,
-    Bz2,
-    Xz,
-    Rar,
-    Unknown,
-}
-
-// Determine archive type based on file extension
-fn get_archive_type(path: &Path) -> ArchiveType {
-    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-        match ext.to_lowercase().as_str() {
-            "zip" => ArchiveType::Zip,
-            "7z" => ArchiveType::SevenZ,
-            "tar" => ArchiveType::Tar,
-            "gz" => {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if stem.ends_with(".tar") {
-                        ArchiveType::TarGz
-                    } else {
-                        ArchiveType::Gz
-                    }
-                } else {
-                    ArchiveType::Unknown
-                }
-            }
-            "bz2" => {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if stem.ends_with(".tar") {
-                        ArchiveType::TarBz2
-                    } else {
-                        ArchiveType::Bz2
-                    }
-                } else {
-                    ArchiveType::Unknown
-                }
-            }
-            "xz" => {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if stem.ends_with(".tar") {
-                        ArchiveType::TarXz
-                    } else {
-                        ArchiveType::Xz
-                    }
-                } else {
-                    ArchiveType::Unknown
-                }
-            }
-            "rar" => ArchiveType::Rar, 
-            _ => ArchiveType::Unknown,
-        }
-    } else {
-        ArchiveType::Unknown
-    }
-}
-
-
-// Extract ZIP archive (non-encrypted)
-fn extract_zip(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut archive = ZipArchive::new(file)?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let outpath = Path::new(extract_to).join(file.name());
-
-        if file.name().ends_with('/') {
-            fs::create_dir_all(&outpath)?;
-        } else {
-            if let Some(p) = outpath.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(p)?;
-                }
-            }
-            let mut outfile = File::create(&outpath)?;
-            io::copy(&mut file, &mut outfile)?;
-        }
-    }
-    Ok(())
-}
-
-// Extract 7Z archive (supports encryption with password)
-fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(archive);
-
-    if let Some(pwd) = password {
-        let password = Password::from(pwd); // Convert to Password
-        decompress_file_with_password(path, extract_to, password)?;
-    } else {
-        decompress_file_with_password(path, extract_to, Password::from(""))?; // Empty password for no encryption
-    }
-    Ok(())
-}
-
-// Extract plain TAR archive
-fn extract_tar(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut archive = TarArchive::new(file); // Explicitly using TarArchive
-    archive.unpack(extract_to)?; // No more method not found error
-    Ok(())
-}
-
-
-// Extract TAR archive with compression
-fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read) -> Result<(), Box<dyn Error>> {
-    let mut archive = TarArchive::new(decoder);
-    archive.unpack(extract_to)?;
-    Ok(())
-}
-
-// Extract TAR.GZ archive
-fn extract_tar_gz(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let decoder = GzDecoder::new(file);
-    extract_tar_compressed(extract_to, decoder)
-}
-
-// Extract TAR.BZ2 archive
-fn extract_tar_bz2(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let decoder = BzDecoder::new(file);
-    extract_tar_compressed(extract_to, decoder)
-}
-
-// Extract TAR.XZ archive
-fn extract_tar_xz(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let decoder = XzDecoder::new(file);
-    extract_tar_compressed(extract_to, decoder)
-}
-
-// Decompress single-file GZ
-fn decompress_gz(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = GzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    Ok(())
-}
-
-// Decompress single-file BZ2
-fn decompress_bz2(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = BzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    Ok(())
-}
-
-// Decompress single-file XZ
-fn decompress_xz(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = XzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    Ok(())
-}
-
-// Main extraction function
-fn extract_archive(archive: &str, extract_to: &str, password: Option<&str>) -> Result<(), Box<dyn Error>> {
-    let path = Path::new(archive);
-    if !path.exists() {
-        return Err("Archive file does not exist".into());
-    }
-
-    let archive_type = get_archive_type(path);
-    match archive_type {
-        ArchiveType::Zip => extract_zip(archive, extract_to),
-        ArchiveType::SevenZ => extract_7z(archive, extract_to, password),
-        ArchiveType::Tar => extract_tar(archive, extract_to),
-        ArchiveType::TarGz => extract_tar_gz(archive, extract_to),
-        ArchiveType::TarBz2 => extract_tar_bz2(archive, extract_to),
-        ArchiveType::TarXz => extract_tar_xz(archive, extract_to),
-        ArchiveType::Gz => decompress_gz(archive, extract_to),
-        ArchiveType::Bz2 => decompress_bz2(archive, extract_to),
-        ArchiveType::Xz => decompress_xz(archive, extract_to),
-        ArchiveType::Rar => extract_rar(archive, extract_to), // <-- Use extract_rar function here
-        ArchiveType::Unknown => Err("Unsupported archive format".into()),
-    }
-}
-
-
-
-// Command-line interface
+use ferris_unzip::{extract_archive_with_config, ExtractionConfig};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("FerrisUnzip")
-        .version("1.0")
-        .about("Extracts various archive formats in Rust")
-        .arg(Arg::new("archive").help("Path to the archive file").required(true))
-        .arg(Arg::new("password").short('p').long("password").help("Password for encrypted 7Z").required(false))
+        .version("2.0")
+        .about("Fast, parallel archive extraction tool")
+        .long_about("FerrisUnzip is a high-performance archive extraction tool that supports multiple formats \
+                     with configurable parallel processing for maximum speed.")
+        .arg(Arg::new("archive")
+            .help("Path to the archive file")
+            .required(true)
+            .index(1))
+        .arg(Arg::new("output")
+            .short('o')
+            .long("output")
+            .help("Output directory for extraction")
+            .value_name("DIR"))
+        .arg(Arg::new("password")
+            .short('p')
+            .long("password")
+            .help("Password for encrypted archives")
+            .value_name("PASSWORD"))
+        .arg(Arg::new("threads")
+            .short('j')
+            .long("threads")
+            .help("Number of threads to use for parallel extraction")
+            .value_name("COUNT")
+            .value_parser(clap::value_parser!(usize)))
+        .arg(Arg::new("buffer-size")
+            .short('b')
+            .long("buffer-size")
+            .help("Buffer size in KB for I/O operations (default: 64)")
+            .value_name("SIZE_KB")
+            .value_parser(clap::value_parser!(usize)))
+        .arg(Arg::new("no-progress")
+            .long("no-progress")
+            .help("Disable progress bar")
+            .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("no-mmap")
+            .long("no-mmap")
+            .help("Disable memory-mapped I/O")
+            .action(clap::ArgAction::SetTrue))
+        .arg(Arg::new("quiet")
+            .short('q')
+            .long("quiet")
+            .help("Suppress all output except errors")
+            .action(clap::ArgAction::SetTrue))
         .get_matches();
 
     let archive_path = matches.get_one::<String>("archive").unwrap();
-    let mut password = matches.get_one::<String>("password").map(|s| s.as_str());
+    let password = matches.get_one::<String>("password").map(|s| s.clone());
+    let quiet = matches.get_flag("quiet");
 
-    // Prompt for extraction directory
-    print!("Where do you want to extract to? (Leave blank to extract where the file is): ");
-    io::stdout().flush()?;
+    // Build configuration from CLI arguments
+    let mut config = ExtractionConfig::default();
+    
+    if let Some(&thread_count) = matches.get_one::<usize>("threads") {
+        config.thread_count = thread_count;
+    }
+    
+    if let Some(&buffer_kb) = matches.get_one::<usize>("buffer-size") {
+        config.buffer_size = buffer_kb * 1024;
+    }
+    
+    config.show_progress = !matches.get_flag("no-progress") && !quiet;
+    config.use_mmap = !matches.get_flag("no-mmap");
+    config.password = password;
 
-    let mut extract_to_str = String::new();
-    io::stdin().read_line(&mut extract_to_str)?;
-    let extract_to_str = extract_to_str.trim();
+    // Validate configuration
+    if let Err(e) = config.validate() {
+        eprintln!("Configuration error: {}", e);
+        std::process::exit(1);
+    }
 
-    // Determine the extraction directory
-    let extract_to: PathBuf = if !extract_to_str.is_empty() {
-        PathBuf::from(extract_to_str)
+    // Determine extraction directory
+    let extract_to: PathBuf = if let Some(output_dir) = matches.get_one::<String>("output") {
+        PathBuf::from(output_dir)
     } else {
-        let archive_path_obj = Path::new(archive_path);
-        let archive_dir = archive_path_obj.parent().ok_or("Invalid archive path: Unable to determine parent directory")?;
-        let archive_filename = archive_path_obj
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or("Invalid filename: Unable to extract file stem")?;
-        archive_dir.join(archive_filename)
+        // Interactive prompt if no output directory specified
+        if !quiet {
+            print!("Where do you want to extract to? (Leave blank to extract where the file is): ");
+            io::stdout().flush()?;
+        }
+
+        let mut extract_to_str = String::new();
+        io::stdin().read_line(&mut extract_to_str)?;
+        let extract_to_str = extract_to_str.trim();
+
+        if !extract_to_str.is_empty() {
+            PathBuf::from(extract_to_str)
+        } else {
+            let archive_path_obj = Path::new(archive_path);
+            let archive_dir = archive_path_obj.parent()
+                .ok_or("Invalid archive path: Unable to determine parent directory")?;
+            let archive_filename = archive_path_obj
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("Invalid filename: Unable to extract file stem")?;
+            archive_dir.join(archive_filename)
+        }
     };
 
     // Create the extraction directory
     fs::create_dir_all(&extract_to)?;
 
-    // Attempt extraction
-    let mut result = extract_archive(archive_path, extract_to.to_str().unwrap(), password);
+    if !quiet {
+        println!("Extracting {} to {}", archive_path, extract_to.display());
+        println!("Using {} threads with {}KB buffer", 
+                 config.effective_thread_count(), 
+                 config.buffer_size / 1024);
+    }
 
-    // Check for missing password error
-    if let Err(err) = &result {
-        if err.to_string().contains("Pass") {
-            // Prompt for password
-            print!("Password for encrypted archive: ");
-            io::stdout().flush()?;
+    // Perform extraction
+    let result = extract_archive_with_config(
+        archive_path, 
+        extract_to.to_str().unwrap(), 
+        &config
+    );
 
-            let mut new_password = String::new();
-            io::stdin().read_line(&mut new_password)?;
-            password = Some(new_password.trim());
+    // Handle password retry for 7Z archives
+    if let Err(ref err) = result {
+        if err.to_string().contains("password") || err.to_string().contains("Pass") {
+            if config.password.is_none() && !quiet {
+                print!("Password for encrypted archive: ");
+                io::stdout().flush()?;
 
-            // Retry extraction with password
-            result = extract_archive(archive_path, extract_to.to_str().unwrap(), password);
+                let mut new_password = String::new();
+                io::stdin().read_line(&mut new_password)?;
+                config.password = Some(new_password.trim().to_string());
+
+                // Retry extraction with password
+                return match extract_archive_with_config(
+                    archive_path, 
+                    extract_to.to_str().unwrap(), 
+                    &config
+                ) {
+                    Ok(_) => {
+                        if !quiet {
+                            println!("Extraction completed successfully!");
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("Extraction failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+            }
         }
     }
 
     // Handle final result
     match result {
-        Ok(_) => println!("Extraction successful."),
-        Err(err) => eprintln!("Extraction failed: {}", err),
-    }
-
-    Ok(())
-}
-
-
-fn extract_rar(archive_path: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
-    let mut archive = Archive::new(archive_path).open_for_processing()?;
-
-    // Ensure the extraction directory exists
-    fs::create_dir_all(extract_to)?;
-
-    while let Some(header) = archive.read_header()? {
-        let dest_path = Path::new(extract_to).join(header.entry().filename.to_string_lossy().as_ref());
-
-        if header.entry().is_directory() {
-            fs::create_dir_all(&dest_path)?;
-            archive = header.skip()?;
-        } else {
-            // Ensure parent directories exist
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
+        Ok(_) => {
+            if !quiet {
+                println!("Extraction completed successfully!");
             }
-            // Extract the file to the destination
-            archive = header.extract_to(&dest_path)?;
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!("Extraction failed: {}", err);
+            std::process::exit(1);
         }
     }
-
-    Ok(())
 }

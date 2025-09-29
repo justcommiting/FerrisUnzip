@@ -1,7 +1,22 @@
 [package]
-name = "Archiver"
-version = "1.0.0"
-edition = "2018"
+name = "ferris-unzip"
+version = "2.0.0"
+edition = "2021"
+description = "Fast, parallel archive extraction tool supporting multiple formats"
+authors = ["FerrisUnzip Contributors"]
+license = "GPL-3.0"
+repository = "https://github.com/justcommiting/FerrisUnzip"
+readme = "README.md"
+keywords = ["archive", "extraction", "zip", "tar", "compression"]
+categories = ["command-line-utilities", "compression"]
+
+[[bin]]
+name = "ferris-unzip"
+path = "src/main.rs"
+
+[lib]
+name = "ferris_unzip"
+path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4.5.30", features = ["derive"] }
@@ -12,3 +27,9 @@ flate2 = "1.0"
 bzip2 = "0.6.0"
 unrar = "0.5.8"
 liblzma = "0.4.1"
+rayon = "1.8"
+threadpool = "1.8"
+indicatif = "0.17"
+num_cpus = "1.16"
+memmap2 = "0.9"
+crossbeam-channel = "0.5"

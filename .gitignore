@@ -1,1 +1,42 @@
-/target
+# Build artifacts
+/target/
+Cargo.lock
+
+# Test files and directories
+/test_archives/
+/test_extractions/
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.gz
+*.bz2
+*.xz
+*.rar
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Runtime files
+*.log
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.orig

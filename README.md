@@ -1,15 +1,16 @@
 # FerrisUnzip
 
-FerrisUnzip is a command-line tool written in Rust for extracting various archive formats. It supports ZIP, 7Z (with password protection), TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, and RAR archives.
+FerrisUnzip is a cross-platform archive extraction tool written in Rust with both GUI and CLI interfaces. It supports ZIP, 7Z (with password protection), TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, and RAR archives.
 
 ## Features
 
+-   **Dual Interface:** Modern graphical user interface (GUI) and command-line interface (CLI).
+-   **Cross-platform GUI:** Works on Windows, macOS, and Linux using egui/eframe.
 -   **Multi-format support:** Extracts ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, and RAR archives.
 -   **Password protection:** Supports password-protected 7Z archives.
--   **Cross-platform:** Built with Rust, making it cross-platform compatible.
--   **Interactive extraction directory prompt:** Allows users to specify the extraction destination.
+-   **Interactive extraction:** Easy file and folder selection with native file dialogs.
+-   **Visual feedback:** Real-time status updates and progress indicators.
 -   **Automatic directory creation:** Creates necessary directories during extraction.
--   **Password retry:** Prompts for a password if an encrypted 7Z archive is detected without one.
 
 ## Prerequisites
 
@@ -34,20 +35,66 @@ FerrisUnzip is a command-line tool written in Rust for extracting various archiv
 
 ## Usage
 
+### GUI Mode (Default)
+
+Simply run the executable without any arguments to launch the graphical interface:
+
 ```bash
-FerrisUnzip <archive_file> [OPTIONS]
+./FerrisUnzip
+# or
+cargo run
 ```
 
-# Dependancies
+The GUI provides:
+- **Browse buttons** to select your archive file and extraction destination
+- **Password field** for encrypted archives
+- **Visual feedback** with status messages and progress indicators
+- **Easy extraction** with a single click
 
-    clap: For command-line argument parsing.
-    zip: For ZIP archive extraction.
-    sevenz-rust: For 7Z archive extraction.
-    tar: For TAR archive extraction.
-    flate2: For GZ decompression.
-    bzip2: For BZ2 decompression.
-    xz2: For XZ decompression.
-    unrar: For RAR archive extraction.
+### CLI Mode
+
+To use the command-line interface, provide an archive file as an argument:
+
+```bash
+./FerrisUnzip <archive_file> [OPTIONS]
+# or
+cargo run <archive_file> [OPTIONS]
+```
+
+**Options:**
+- `-p, --password <PASSWORD>`: Password for encrypted 7Z archives
+
+**Example:**
+```bash
+./FerrisUnzip myarchive.zip
+./FerrisUnzip protected.7z -p mypassword
+```
+
+# Dependencies
+
+## Core Libraries
+-   **clap:** Command-line argument parsing for CLI mode.
+-   **zip:** ZIP archive extraction.
+-   **sevenz-rust:** 7Z archive extraction with AES-256 encryption support.
+-   **tar:** TAR archive extraction.
+-   **flate2:** GZ decompression.
+-   **bzip2:** BZ2 decompression.
+-   **liblzma:** XZ decompression.
+-   **unrar:** RAR archive extraction.
+
+## GUI Libraries
+-   **egui:** Immediate mode GUI framework.
+-   **eframe:** Application framework for egui.
+-   **rfd:** Native file picker dialogs for all platforms.
+
+## Supported Platforms
+
+FerrisUnzip's GUI works on:
+- **Windows** (Windows 7 and later)
+- **macOS** (10.13 High Sierra and later)
+- **Linux** (with X11 or Wayland)
+
+The CLI mode works on any platform where Rust can compile.
 
 # Contributing
 

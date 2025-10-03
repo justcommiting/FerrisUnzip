@@ -369,10 +369,10 @@ fn install_windows_shell_integration() -> Result<String, Box<dyn Error>> {
     
     // Create registry entries for context menu
     let reg_commands = vec![
-        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\*\shell\FerrisUnzip" /ve /d "Extract with FerrisUnzip" /f"#),
-        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\*\shell\FerrisUnzip\command" /ve /d "\"{}\" \"%1\"" /f"#, exe_path_str),
-        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\FerrisUnzip" /ve /d "Extract Archive with FerrisUnzip" /f"#),
-        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\FerrisUnzip\command" /ve /d "\"{}\"" /f"#, exe_path_str),
+        format!(r#"reg add HKEY_CURRENT_USER\Software\Classes\*\shell\FerrisUnzip /ve /d "Extract with FerrisUnzip" /f"#),
+        format!(r#"reg add HKEY_CURRENT_USER\Software\Classes\*\shell\FerrisUnzip\command /ve /d "\"{}\" \"%1\"" /f"#, exe_path_str),
+        format!(r#"reg add HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\FerrisUnzip /ve /d "Extract Archive with FerrisUnzip" /f"#),
+        format!(r#"reg add HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\FerrisUnzip\command /ve /d "\"{}\"" /f"#, exe_path_str),
     ];
     
     for cmd in &reg_commands {

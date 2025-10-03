@@ -11,6 +11,7 @@ use bzip2::read::BzDecoder;
 use liblzma::read::XzDecoder;
 use unrar::Archive;
 use std::io::Write;
+use indicatif::{ProgressBar, ProgressStyle};
 
 // Enum to represent supported archive types
 #[derive(Debug)]
@@ -82,9 +83,17 @@ fn extract_zip(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
     let file = File::open(archive)?;
     let mut archive = ZipArchive::new(file)?;
 
+    let pb = ProgressBar::new(archive.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({msg})")
+        .unwrap()
+        .progress_chars("#>-"));
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let outpath = Path::new(extract_to).join(file.name());
+        
+        pb.set_message(file.name().to_string());
 
         if file.name().ends_with('/') {
             fs::create_dir_all(&outpath)?;
@@ -97,7 +106,9 @@ fn extract_zip(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
             let mut outfile = File::create(&outpath)?;
             io::copy(&mut file, &mut outfile)?;
         }
+        pb.inc(1);
     }
+    pb.finish_with_message("Extraction complete");
     Ok(())
 }
 
@@ -105,20 +116,39 @@ fn extract_zip(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
 fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(archive);
 
+    println!("Extracting 7Z archive...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    pb.set_message("Extracting files...");
+
     if let Some(pwd) = password {
         let password = Password::from(pwd); // Convert to Password
         decompress_file_with_password(path, extract_to, password)?;
     } else {
         decompress_file_with_password(path, extract_to, Password::from(""))?; // Empty password for no encryption
     }
+    
+    pb.finish_with_message("Extraction complete");
     Ok(())
 }
 
 // Extract plain TAR archive
 fn extract_tar(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
     let file = File::open(archive)?;
-    let mut archive = TarArchive::new(file); // Explicitly using TarArchive
-    archive.unpack(extract_to)?; // No more method not found error
+    let mut archive = TarArchive::new(file);
+    
+    println!("Extracting TAR archive...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    pb.set_message("Extracting files...");
+    
+    archive.unpack(extract_to)?;
+    
+    pb.finish_with_message("Extraction complete");
     Ok(())
 }
 
@@ -126,7 +156,17 @@ fn extract_tar(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
 // Extract TAR archive with compression
 fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read) -> Result<(), Box<dyn Error>> {
     let mut archive = TarArchive::new(decoder);
+    
+    println!("Extracting compressed TAR archive...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    pb.set_message("Extracting files...");
+    
     archive.unpack(extract_to)?;
+    
+    pb.finish_with_message("Extraction complete");
     Ok(())
 }
 
@@ -156,8 +196,18 @@ fn decompress_gz(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> 
     let file = File::open(archive)?;
     let mut decoder = GzDecoder::new(file);
     let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    
+    println!("Decompressing GZ file...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    pb.set_message(format!("Decompressing to {}", output_file.display()));
+    
     let mut outfile = File::create(output_file)?;
     io::copy(&mut decoder, &mut outfile)?;
+    
+    pb.finish_with_message("Decompression complete");
     Ok(())
 }
 
@@ -166,8 +216,18 @@ fn decompress_bz2(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>>
     let file = File::open(archive)?;
     let mut decoder = BzDecoder::new(file);
     let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    
+    println!("Decompressing BZ2 file...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    pb.set_message(format!("Decompressing to {}", output_file.display()));
+    
     let mut outfile = File::create(output_file)?;
     io::copy(&mut decoder, &mut outfile)?;
+    
+    pb.finish_with_message("Decompression complete");
     Ok(())
 }
 
@@ -176,8 +236,18 @@ fn decompress_xz(archive: &str, extract_to: &str) -> Result<(), Box<dyn Error>> 
     let file = File::open(archive)?;
     let mut decoder = XzDecoder::new(file);
     let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    
+    println!("Decompressing XZ file...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+    pb.set_message(format!("Decompressing to {}", output_file.display()));
+    
     let mut outfile = File::create(output_file)?;
     io::copy(&mut decoder, &mut outfile)?;
+    
+    pb.finish_with_message("Decompression complete");
     Ok(())
 }
 
@@ -278,8 +348,17 @@ fn extract_rar(archive_path: &str, extract_to: &str) -> Result<(), Box<dyn Error
     // Ensure the extraction directory exists
     fs::create_dir_all(extract_to)?;
 
+    println!("Extracting RAR archive...");
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} [{elapsed_precise}] {msg}")
+        .unwrap());
+
     while let Some(header) = archive.read_header()? {
         let dest_path = Path::new(extract_to).join(header.entry().filename.to_string_lossy().as_ref());
+        
+        pb.set_message(format!("Extracting: {}", header.entry().filename.to_string_lossy()));
+        pb.tick();
 
         if header.entry().is_directory() {
             fs::create_dir_all(&dest_path)?;
@@ -294,5 +373,6 @@ fn extract_rar(archive_path: &str, extract_to: &str) -> Result<(), Box<dyn Error
         }
     }
 
+    pb.finish_with_message("Extraction complete");
     Ok(())
 }

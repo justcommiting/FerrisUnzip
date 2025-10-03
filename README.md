@@ -11,6 +11,8 @@ FerrisUnzip is a cross-platform archive extraction tool written in Rust with bot
 -   **Interactive extraction:** Easy file and folder selection with native file dialogs.
 -   **Visual feedback:** Real-time status updates and progress indicators.
 -   **Automatic directory creation:** Creates necessary directories during extraction.
+-   **Shell Integration:** One-click installation for context menu integration (right-click "Extract with FerrisUnzip" on Windows/Linux).
+-   **Hidden Console:** Clean GUI experience on Windows without console window popup.
 
 ## Prerequisites
 
@@ -50,6 +52,20 @@ The GUI provides:
 - **Password field** for encrypted archives
 - **Visual feedback** with status messages and progress indicators
 - **Easy extraction** with a single click
+- **Install button** to register shell integration (adds "Extract with FerrisUnzip" to context menus)
+
+### Shell Integration
+
+To enable right-click context menu integration:
+
+1. Launch FerrisUnzip GUI
+2. Click the "Install Shell Integration" button
+3. On Windows: This adds registry entries for context menu integration
+4. On Linux: This creates a .desktop file for file associations
+
+After installation:
+- **Windows**: Right-click any archive file → "Extract with FerrisUnzip"
+- **Linux**: Archive files will show FerrisUnzip as an available application
 
 ### CLI Mode
 

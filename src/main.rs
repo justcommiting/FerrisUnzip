@@ -1,4 +1,5 @@
 use clap::{Arg, Command};
+use eframe::egui;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io;
@@ -11,6 +12,8 @@ use bzip2::read::BzDecoder;
 use liblzma::read::XzDecoder;
 use unrar::Archive;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 // Enum to represent supported archive types
 #[derive(Debug)]
@@ -208,7 +211,7 @@ fn extract_archive(archive: &str, extract_to: &str, password: Option<&str>) -> R
 
 // Command-line interface
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn run_cli() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("FerrisUnzip")
         .version("1.0")
         .about("Extracts various archive formats in Rust")
@@ -271,6 +274,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn main() -> Result<(), Box<dyn Error>> {
+    // Check if we have command-line arguments (CLI mode)
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() > 1 {
+        // CLI mode
+        run_cli()
+    } else {
+        // GUI mode
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([500.0, 400.0])
+                .with_min_inner_size([400.0, 300.0]),
+            ..Default::default()
+        };
+        
+        eframe::run_native(
+            "FerrisUnzip",
+            options,
+            Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
+        ).map_err(|e| format!("Failed to run GUI: {}", e).into())
+    }
+}
+
 
 fn extract_rar(archive_path: &str, extract_to: &str) -> Result<(), Box<dyn Error>> {
     let mut archive = Archive::new(archive_path).open_for_processing()?;
@@ -295,4 +322,186 @@ fn extract_rar(archive_path: &str, extract_to: &str) -> Result<(), Box<dyn Error
     }
 
     Ok(())
+}
+
+// GUI Application
+struct FerrisUnzipApp {
+    archive_path: String,
+    extract_to_path: String,
+    password: String,
+    status_message: String,
+    is_extracting: bool,
+    extraction_result: Arc<Mutex<Option<Result<(), String>>>>,
+}
+
+impl Default for FerrisUnzipApp {
+    fn default() -> Self {
+        Self {
+            archive_path: String::new(),
+            extract_to_path: String::new(),
+            password: String::new(),
+            status_message: String::from("Select an archive file to extract"),
+            is_extracting: false,
+            extraction_result: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl eframe::App for FerrisUnzipApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check for extraction completion
+        if self.is_extracting {
+            if let Ok(mut result) = self.extraction_result.try_lock() {
+                if let Some(res) = result.take() {
+                    self.is_extracting = false;
+                    match res {
+                        Ok(_) => {
+                            self.status_message = "✓ Extraction successful!".to_string();
+                        }
+                        Err(e) => {
+                            self.status_message = format!("✗ Extraction failed: {}", e);
+                        }
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("FerrisUnzip - Archive Extractor");
+            ui.add_space(20.0);
+
+            // Archive file selection
+            ui.horizontal(|ui| {
+                ui.label("Archive file:");
+                if ui.button("Browse...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Archives", &["zip", "7z", "tar", "gz", "bz2", "xz", "rar"])
+                        .add_filter("All files", &["*"])
+                        .pick_file()
+                    {
+                        self.archive_path = path.display().to_string();
+                        
+                        // Auto-set extraction path based on archive location
+                        if let Some(archive_path_obj) = Path::new(&self.archive_path).parent() {
+                            if let Some(filename) = Path::new(&self.archive_path).file_stem() {
+                                self.extract_to_path = archive_path_obj
+                                    .join(filename)
+                                    .display()
+                                    .to_string();
+                            }
+                        }
+                        
+                        self.status_message = "Archive selected. Choose extraction destination.".to_string();
+                    }
+                }
+            });
+            
+            ui.horizontal(|ui| {
+                ui.label("Path:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.archive_path)
+                        .desired_width(350.0)
+                );
+            });
+
+            ui.add_space(15.0);
+
+            // Extraction directory selection
+            ui.horizontal(|ui| {
+                ui.label("Extract to:");
+                if ui.button("Browse...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        self.extract_to_path = path.display().to_string();
+                    }
+                }
+            });
+            
+            ui.horizontal(|ui| {
+                ui.label("Path:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.extract_to_path)
+                        .desired_width(350.0)
+                );
+            });
+
+            ui.add_space(15.0);
+
+            // Password field (for encrypted archives)
+            ui.horizontal(|ui| {
+                ui.label("Password (optional):");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.password)
+                        .password(true)
+                        .desired_width(250.0)
+                        .hint_text("Leave blank for non-encrypted archives")
+                );
+            });
+
+            ui.add_space(20.0);
+
+            // Extract button
+            ui.horizontal(|ui| {
+                let can_extract = !self.archive_path.is_empty() 
+                    && !self.extract_to_path.is_empty() 
+                    && !self.is_extracting;
+                
+                if ui.add_enabled(can_extract, egui::Button::new("Extract Archive")).clicked() {
+                    self.is_extracting = true;
+                    self.status_message = "Extracting...".to_string();
+                    
+                    let archive_path = self.archive_path.clone();
+                    let extract_to = self.extract_to_path.clone();
+                    let password = if self.password.is_empty() {
+                        None
+                    } else {
+                        Some(self.password.clone())
+                    };
+                    let result_arc = Arc::clone(&self.extraction_result);
+                    
+                    // Run extraction in a separate thread
+                    thread::spawn(move || {
+                        let result = extract_archive(
+                            &archive_path,
+                            &extract_to,
+                            password.as_deref()
+                        );
+                        
+                        let mapped_result = result.map_err(|e| e.to_string());
+                        *result_arc.lock().unwrap() = Some(mapped_result);
+                    });
+                }
+                
+                if self.is_extracting {
+                    ui.spinner();
+                }
+            });
+
+            ui.add_space(15.0);
+
+            // Status message
+            ui.separator();
+            ui.add_space(10.0);
+            
+            let status_color = if self.status_message.starts_with("✓") {
+                egui::Color32::from_rgb(0, 150, 0)
+            } else if self.status_message.starts_with("✗") {
+                egui::Color32::from_rgb(200, 0, 0)
+            } else if self.status_message.contains("Extracting") {
+                egui::Color32::from_rgb(0, 100, 200)
+            } else {
+                egui::Color32::from_rgb(100, 100, 100)
+            };
+            
+            ui.colored_label(status_color, &self.status_message);
+
+            ui.add_space(15.0);
+
+            // Supported formats
+            ui.separator();
+            ui.add_space(10.0);
+            ui.label("Supported formats: ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, RAR");
+            ui.label("Version 1.0 - Cross-platform archive extractor");
+        });
+    }
 }

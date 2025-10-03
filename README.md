@@ -54,6 +54,8 @@ For Windows users, we provide convenient PowerShell scripts to install FerrisUnz
     .\install_windows.ps1
     ```
 
+**For detailed Windows installation instructions, troubleshooting, and manual installation steps, see [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)**
+
 ### Windows Uninstallation
 
 To remove FerrisUnzip integration:

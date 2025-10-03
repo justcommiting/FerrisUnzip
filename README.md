@@ -30,7 +30,39 @@ FerrisUnzip is a command-line tool written in Rust for extracting various archiv
     cargo build --release
     ```
 
-3.  The executable will be located at `target/release/FerrisUnzip`. You can copy it to a directory in your PATH for easy access.
+3.  The executable will be located at `target/release/Archiver` (or `Archiver.exe` on Windows). You can copy it to a directory in your PATH for easy access.
+
+### Windows Installation
+
+For Windows users, we provide convenient PowerShell scripts to install FerrisUnzip with system integration:
+
+1.  After building the project, run the installation script:
+
+    ```powershell
+    .\install_windows.ps1
+    ```
+
+2.  The script will prompt you to choose installation options:
+    -   **Add to PATH**: Allows you to run `Archiver` from any directory in the command line
+    -   **Add to Windows Explorer context menu**: Right-click on any archive file and select "Extract with FerrisUnzip"
+    -   **Both options**: Complete integration
+
+3.  For system-wide installation (adding to system PATH or context menu), run PowerShell as Administrator:
+
+    ```powershell
+    # Right-click PowerShell and select "Run as Administrator"
+    .\install_windows.ps1
+    ```
+
+### Windows Uninstallation
+
+To remove FerrisUnzip integration:
+
+```powershell
+.\uninstall_windows.ps1
+```
+
+This will remove PATH entries and/or context menu entries based on your selection.
 
 ## Usage
 

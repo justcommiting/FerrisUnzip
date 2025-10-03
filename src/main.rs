@@ -1,3 +1,6 @@
+// Hide console window on Windows when running in GUI mode
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use clap::{Arg, Command};
 use eframe::egui;
 use std::error::Error;
@@ -14,6 +17,7 @@ use unrar::Archive;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::env;
 
 // Enum to represent supported archive types
 #[derive(Debug)]
@@ -324,6 +328,114 @@ fn extract_rar(archive_path: &str, extract_to: &str) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+// OS detection
+#[derive(Debug, PartialEq)]
+enum OperatingSystem {
+    Windows,
+    Linux,
+    MacOS,
+    Other,
+}
+
+fn detect_os() -> OperatingSystem {
+    if cfg!(target_os = "windows") {
+        OperatingSystem::Windows
+    } else if cfg!(target_os = "linux") {
+        OperatingSystem::Linux
+    } else if cfg!(target_os = "macos") {
+        OperatingSystem::MacOS
+    } else {
+        OperatingSystem::Other
+    }
+}
+
+// Shell integration installation
+fn install_shell_integration() -> Result<String, Box<dyn Error>> {
+    let os = detect_os();
+    
+    match os {
+        OperatingSystem::Windows => install_windows_shell_integration(),
+        OperatingSystem::Linux => install_linux_shell_integration(),
+        _ => Err("Shell integration is currently only supported on Windows and Linux".into()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows_shell_integration() -> Result<String, Box<dyn Error>> {
+    use std::process::Command;
+    
+    let exe_path = env::current_exe()?;
+    let exe_path_str = exe_path.display().to_string();
+    
+    // Create registry entries for context menu
+    let reg_commands = vec![
+        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\*\shell\FerrisUnzip" /ve /d "Extract with FerrisUnzip" /f"#),
+        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\*\shell\FerrisUnzip\command" /ve /d "\"{}\" \"%1\"" /f"#, exe_path_str),
+        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\FerrisUnzip" /ve /d "Extract Archive with FerrisUnzip" /f"#),
+        format!(r#"reg add "HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\FerrisUnzip\command" /ve /d "\"{}\"" /f"#, exe_path_str),
+    ];
+    
+    for cmd in &reg_commands {
+        let output = Command::new("cmd")
+            .args(&["/C", cmd])
+            .output()?;
+        
+        if !output.status.success() {
+            return Err(format!("Failed to register shell integration: {}", 
+                String::from_utf8_lossy(&output.stderr)).into());
+        }
+    }
+    
+    Ok("Shell integration installed successfully! Right-click on archive files to see 'Extract with FerrisUnzip' option.".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn install_windows_shell_integration() -> Result<String, Box<dyn Error>> {
+    Err("Windows shell integration is only available on Windows".into())
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_shell_integration() -> Result<String, Box<dyn Error>> {
+    let exe_path = env::current_exe()?;
+    let exe_path_str = exe_path.display().to_string();
+    
+    // Create desktop entry
+    let home_dir = env::var("HOME")?;
+    let desktop_entry_dir = format!("{}/.local/share/applications", home_dir);
+    fs::create_dir_all(&desktop_entry_dir)?;
+    
+    let desktop_entry_path = format!("{}/ferrisunzip.desktop", desktop_entry_dir);
+    let desktop_entry_content = format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=FerrisUnzip\n\
+         Comment=Extract various archive formats\n\
+         Exec={} %f\n\
+         Icon=utilities-file-archiver\n\
+         Terminal=false\n\
+         Categories=Utility;Archiving;\n\
+         MimeType=application/zip;application/x-7z-compressed;application/x-tar;application/gzip;application/x-bzip2;application/x-xz;application/x-rar;\n",
+        exe_path_str
+    );
+    
+    let mut file = File::create(&desktop_entry_path)?;
+    file.write_all(desktop_entry_content.as_bytes())?;
+    
+    // Update desktop database if available
+    if let Ok(_) = std::process::Command::new("update-desktop-database")
+        .arg(desktop_entry_dir)
+        .output() {
+        // Command executed successfully
+    }
+    
+    Ok("Shell integration installed successfully! Archive files should now show FerrisUnzip as an option.".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_linux_shell_integration() -> Result<String, Box<dyn Error>> {
+    Err("Linux shell integration is only available on Linux".into())
+}
+
 // GUI Application
 struct FerrisUnzipApp {
     archive_path: String,
@@ -332,6 +444,7 @@ struct FerrisUnzipApp {
     status_message: String,
     is_extracting: bool,
     extraction_result: Arc<Mutex<Option<Result<(), String>>>>,
+    install_message: String,
 }
 
 impl Default for FerrisUnzipApp {
@@ -343,6 +456,7 @@ impl Default for FerrisUnzipApp {
             status_message: String::from("Select an archive file to extract"),
             is_extracting: false,
             extraction_result: Arc::new(Mutex::new(None)),
+            install_message: String::new(),
         }
     }
 }
@@ -475,6 +589,15 @@ impl eframe::App for FerrisUnzipApp {
                 if self.is_extracting {
                     ui.spinner();
                 }
+                
+                // Install button
+                ui.add_space(20.0);
+                if ui.button("Install Shell Integration").clicked() {
+                    self.install_message = match install_shell_integration() {
+                        Ok(msg) => format!("✓ {}", msg),
+                        Err(e) => format!("✗ Installation failed: {}", e),
+                    };
+                }
             });
 
             ui.add_space(15.0);
@@ -494,6 +617,17 @@ impl eframe::App for FerrisUnzipApp {
             };
             
             ui.colored_label(status_color, &self.status_message);
+
+            // Install message
+            if !self.install_message.is_empty() {
+                ui.add_space(5.0);
+                let install_color = if self.install_message.starts_with("✓") {
+                    egui::Color32::from_rgb(0, 150, 0)
+                } else {
+                    egui::Color32::from_rgb(200, 0, 0)
+                };
+                ui.colored_label(install_color, &self.install_message);
+            }
 
             ui.add_space(15.0);
 

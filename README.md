@@ -5,7 +5,7 @@ FerrisUnzip is a cross-platform archive extraction tool written in Rust with bot
 ## Features
 
 -   **Dual Interface:** Modern graphical user interface (GUI) and command-line interface (CLI).
--   **Cross-platform GUI:** Works on Windows, macOS, and Linux using egui/eframe.
+-   **Cross-platform GUI:** Works on Windows, macOS, and Linux using Slint.
 -   **Multi-format support:** Extracts ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, and RAR archives.
 -   **Password protection:** Supports password-protected 7Z archives.
 -   **Interactive extraction:** Easy file and folder selection with native file dialogs.
@@ -13,6 +13,7 @@ FerrisUnzip is a cross-platform archive extraction tool written in Rust with bot
 -   **Automatic directory creation:** Creates necessary directories during extraction.
 -   **Shell Integration:** One-click installation for context menu integration (right-click "Extract with FerrisUnzip" on Windows/Linux).
 -   **Hidden Console:** Clean GUI experience on Windows without console window popup.
+-   **Declarative UI:** Modern UI built with Slint for easy customization and maintenance.
 
 ## Prerequisites
 
@@ -99,8 +100,8 @@ cargo run <archive_file> [OPTIONS]
 -   **unrar:** RAR archive extraction.
 
 ## GUI Libraries
--   **egui:** Immediate mode GUI framework.
--   **eframe:** Application framework for egui.
+-   **slint:** Declarative UI framework for building native GUIs.
+-   **slint-build:** Build-time compiler for .slint UI files.
 -   **rfd:** Native file picker dialogs for all platforms.
 
 ## Supported Platforms

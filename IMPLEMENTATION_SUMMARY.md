@@ -1,18 +1,19 @@
 # FerrisUnzip GUI Implementation Summary
 
 ## Overview
-Successfully added a cross-platform graphical user interface (GUI) to FerrisUnzip using the egui/eframe framework, while maintaining full backward compatibility with the existing command-line interface.
+Successfully added a cross-platform graphical user interface (GUI) to FerrisUnzip using the Slint framework, while maintaining full backward compatibility with the existing command-line interface.
 
 ## Technology Choices
 
-### GUI Framework: egui + eframe
-**Why egui/eframe?**
+### GUI Framework: Slint
+**Why Slint?**
 - ✅ **True cross-platform**: Works seamlessly on Windows, macOS, and Linux
-- ✅ **Native performance**: Written in Rust, compiles to native code
-- ✅ **Small footprint**: Minimal dependencies, reasonable binary size
-- ✅ **Modern look**: Clean, responsive interface
-- ✅ **Easy integration**: Simple immediate-mode API
+- ✅ **Native performance**: Compiled to efficient native code
+- ✅ **Modern look**: Beautiful, clean, and responsive interface
+- ✅ **Declarative UI**: UI defined in .slint files separate from business logic
+- ✅ **Lightweight**: Small binary size with minimal dependencies
 - ✅ **Active development**: Well-maintained with regular updates
+- ✅ **Designer-friendly**: UI can be edited with visual tools
 
 ### File Dialogs: rfd (Rusty File Dialogs)
 - Native file picker integration
@@ -59,11 +60,21 @@ src/main.rs
 │   ├── Routes to CLI or GUI mode
 │   └── Initializes appropriate interface
 │
-└── FerrisUnzipApp - GUI application
-    ├── State management
-    ├── UI rendering
-    ├── Event handling
-    └── Background extraction thread
+└── run_gui() - GUI application
+    ├── Initializes Slint UI
+    ├── Sets up event handlers
+    ├── Manages state with Arc<Mutex<>>
+    └── Handles background extraction thread
+
+ui/appwindow.slint
+└── Declarative UI definition
+    ├── Window layout and styling
+    ├── Properties for data binding
+    ├── Callbacks for user interactions
+    └── Conditional rendering logic
+
+build.rs
+└── Compiles .slint files at build time
 ```
 
 ### Key Features Implemented
@@ -98,9 +109,9 @@ src/main.rs
 ## Dependencies Added
 
 ```toml
-eframe = "0.29"    # Application framework
-egui = "0.29"      # Immediate mode GUI
-rfd = "0.15"       # Native file dialogs
+slint = "1.9"           # Declarative UI framework
+slint-build = "1.9"     # Build-time compilation of .slint files
+rfd = "0.15"            # Native file dialogs
 ```
 
 ## Platform Compatibility
@@ -152,20 +163,23 @@ cargo run -- myarchive.zip
 ### Note on GUI Testing
 GUI functionality cannot be visually tested in the headless CI environment, but:
 - Compiles without errors
-- All UI code follows egui best practices
+- All UI code follows Slint best practices
 - Background extraction thread properly implemented
-- State management correctly structured
+- State management correctly structured with Arc<Mutex<>>
+- UI defined declaratively in .slint format
 
 ## File Changes
 
 ### Modified Files
-1. **Cargo.toml**: Added GUI dependencies
-2. **src/main.rs**: Refactored for dual-mode operation
+1. **Cargo.toml**: Replaced egui/eframe with Slint dependencies, updated to edition 2021
+2. **src/main.rs**: Refactored for Slint integration with declarative UI
 3. **README.md**: Updated with GUI documentation
 
 ### New Files
-1. **GUI_GUIDE.md**: Comprehensive GUI user guide
-2. **IMPLEMENTATION_SUMMARY.md**: This file
+1. **ui/appwindow.slint**: Declarative UI definition
+2. **build.rs**: Build script to compile .slint files
+3. **GUI_GUIDE.md**: Comprehensive GUI user guide
+4. **IMPLEMENTATION_SUMMARY.md**: This file
 
 ## Benefits
 
@@ -196,4 +210,4 @@ Potential improvements for future versions:
 
 ## Conclusion
 
-The GUI implementation successfully modernizes FerrisUnzip while maintaining full backward compatibility. The choice of egui/eframe provides a robust, cross-platform solution that works seamlessly on Windows, macOS, and Linux. The application now serves both casual users who prefer a graphical interface and power users who rely on command-line tools.
+The GUI implementation successfully modernizes FerrisUnzip while maintaining full backward compatibility. The choice of Slint provides a robust, modern, cross-platform solution with a clean separation between UI and business logic. The declarative UI approach makes the interface easy to maintain and modify. The application now serves both casual users who prefer a graphical interface and power users who rely on command-line tools.

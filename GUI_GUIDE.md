@@ -2,7 +2,7 @@
 
 ## Overview
 
-FerrisUnzip features a modern, user-friendly graphical interface built with egui, providing a cross-platform experience on Windows, macOS, and Linux.
+FerrisUnzip features a modern, user-friendly graphical interface built with Slint, providing a cross-platform experience on Windows, macOS, and Linux. The UI is defined declaratively using the Slint language, ensuring a native look and feel on all platforms.
 
 ## GUI Layout
 

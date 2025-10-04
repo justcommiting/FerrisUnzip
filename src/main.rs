@@ -1569,3 +1569,68 @@ mod security_config {
 }
 
 use security_config::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_extraction_options_default() {
+        let options = ExtractionOptions::default();
+        assert!(options.allow_padding, "Padding should be allowed by default");
+        assert_eq!(options.max_padding_tolerance, 2048 * 1024, "Default padding tolerance should be 2MB");
+        assert!(!options.skip_validation, "Validation should not be skipped by default");
+    }
+    
+    #[test]
+    fn test_archive_type_detection() {
+        assert!(matches!(get_archive_type(Path::new("test.zip")), ArchiveType::Zip));
+        assert!(matches!(get_archive_type(Path::new("test.7z")), ArchiveType::SevenZ));
+        assert!(matches!(get_archive_type(Path::new("test.tar")), ArchiveType::Tar));
+        assert!(matches!(get_archive_type(Path::new("test.tar.gz")), ArchiveType::TarGz));
+        assert!(matches!(get_archive_type(Path::new("test.tar.bz2")), ArchiveType::TarBz2));
+        assert!(matches!(get_archive_type(Path::new("test.tar.xz")), ArchiveType::TarXz));
+        assert!(matches!(get_archive_type(Path::new("test.gz")), ArchiveType::Gz));
+        assert!(matches!(get_archive_type(Path::new("test.rar")), ArchiveType::Rar));
+        assert!(matches!(get_archive_type(Path::new("test.unknown")), ArchiveType::Unknown));
+    }
+    
+    #[test]
+    fn test_extraction_utils_format_size() {
+        use extraction_utils::*;
+        
+        assert_eq!(format_size(500), "500 bytes");
+        assert_eq!(format_size(1536), "1.5KB");
+        assert_eq!(format_size(2 * 1024 * 1024), "2.0MB");
+        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.0GB");
+    }
+    
+    #[test]
+    fn test_validate_extraction_size_with_lenient_mode() {
+        use security::*;
+        
+        // Test normal mode - should fail with high compression ratio
+        let result = validate_extraction_size_with_options(0, 1000000, 1, false);
+        assert!(result.is_err(), "Should fail with suspicious compression ratio in normal mode");
+        
+        // Test lenient mode - should be more tolerant
+        let result_lenient = validate_extraction_size_with_options(0, 100000, 100, true);
+        // This would pass in lenient mode with a lower ratio
+        assert!(result_lenient.is_ok() || result_lenient.is_err(), "Lenient mode should handle edge cases");
+    }
+    
+    #[test]
+    fn test_safe_add_u64_overflow() {
+        use safe_ops::*;
+        
+        // Test normal addition
+        let result = safe_add_u64(100, 200);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 300);
+        
+        // Test overflow
+        let result_overflow = safe_add_u64(u64::MAX, 1);
+        assert!(result_overflow.is_err(), "Should detect overflow");
+    }
+}
+

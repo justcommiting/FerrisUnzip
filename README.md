@@ -13,6 +13,9 @@ FerrisUnzip is a cross-platform archive extraction tool written in Rust with bot
 -   **Automatic directory creation:** Creates necessary directories during extraction.
 -   **Shell Integration:** One-click installation for context menu integration (right-click "Extract with FerrisUnzip" on Windows/Linux).
 -   **Hidden Console:** Clean GUI experience on Windows without console window popup.
+-   **Versatile Extraction:** Handles archives with padding (e.g., ISO files from burned discs) with configurable tolerance.
+-   **Modular Architecture:** Clean, maintainable code with reusable extraction utilities.
+-   **Enhanced Security:** Comprehensive validation with configurable strictness levels for edge cases.
 
 ## Prerequisites
 
@@ -111,6 +114,28 @@ FerrisUnzip's GUI works on:
 - **Linux** (with X11 or Wayland)
 
 The CLI mode works on any platform where Rust can compile.
+
+## Advanced Features
+
+### Handling Archives with Padding
+
+FerrisUnzip is designed to handle real-world archives that may not strictly conform to specifications. This includes:
+
+- **ISO files with sector padding:** When ISO files are burned to disc and then added to archives, they often include padding bytes to align with disc sectors (typically 2048 bytes). FerrisUnzip automatically handles this with a default tolerance of 2MB.
+  
+- **Configurable tolerance:** The extraction engine allows for size mismatches within acceptable limits, making it versatile for various archive sources.
+
+- **Lenient compression checks:** For legitimate large files with high compression ratios, FerrisUnzip can operate in lenient mode to avoid false positives in zip-bomb detection.
+
+### Modular Extraction Framework
+
+The extraction logic has been designed with modularity in mind:
+
+- **Common utilities:** Shared functions for progress reporting, size formatting, and directory preparation reduce code duplication.
+  
+- **Format-agnostic design:** Each archive format has its own extractor, but they all use common infrastructure for consistency.
+
+- **Easy to extend:** Adding support for new archive formats is straightforward thanks to the modular architecture.
 
 # Contributing
 

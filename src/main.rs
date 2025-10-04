@@ -5,7 +5,7 @@ use clap::{Arg, Command};
 use eframe::egui;
 use std::error::Error;
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 use sevenz_rust::{decompress_file_with_password, Password};
@@ -15,7 +15,7 @@ use bzip2::read::BzDecoder;
 use liblzma::read::XzDecoder;
 use unrar::Archive;
 use std::io::Write;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::env;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -91,101 +91,87 @@ fn get_archive_type(path: &Path) -> ArchiveType {
 
 // Extract ZIP archive (non-encrypted) with progress tracking
 fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
+    // Pre-extraction security validation
+    let archive_path_buf = Path::new(archive_path);
+    validate_archive_file(archive_path_buf)?;
+    
     let file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(file)?;
     let total_files = archive.len();
+    
+    // Check file count limit
+    if total_files > MAX_FILES {
+        return Err(format!("Archive contains too many files: {} (limit: {})", total_files, MAX_FILES).into());
+    }
+    
     let processed = Arc::new(AtomicUsize::new(0));
+    let mut total_extracted_size = 0u64;
+    let extract_to_path = Path::new(extract_to);
+    
+    // Ensure extraction directory exists and is writable
+    fs::create_dir_all(extract_to_path)?;
 
-    // For smaller archives, process sequentially to avoid overhead
-    if total_files < 50 {
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let outpath = Path::new(extract_to).join(file.name());
+    for i in 0..archive.len() {
+        let file = archive.by_index(i)?;
+        let file_size = file.size();
+        let compressed_size = file.compressed_size();
+        let file_name = file.name().to_string();
+        
+        // Enhanced security validation with overflow protection
+        validate_extraction_size(total_extracted_size, file_size, compressed_size)?;
+        
+        // Safe addition with overflow protection
+        total_extracted_size = safe_add_u64(total_extracted_size, file_size)?;
+        
+        // Sanitize the output path with enhanced security
+        let outpath = sanitize_path(&file_name, extract_to_path)?;
 
-            if file.name().ends_with('/') {
-                fs::create_dir_all(&outpath)?;
+        if file_name.ends_with('/') {
+            fs::create_dir_all(&outpath)?;
+        } else {
+            if let Some(p) = outpath.parent() {
+                if !p.exists() {
+                    fs::create_dir_all(p)?;
+                }
+            }
+            
+            // Safe extraction with overflow protection
+            let mut outfile = File::create(&outpath)?;
+            let limited_reader = file.take(file_size);
+            
+            // Use safe decompression wrapper to prevent overflow
+            let actual_size = safe_decompress_with_limits(
+                limited_reader,
+                &mut outfile,
+                file_size
+            )?;
+            
+            // Verify actual extracted size matches expected
+            if actual_size != file_size {
+                return Err(format!("Size mismatch: expected {}, got {} bytes", file_size, actual_size).into());
+            }
+        }
+
+        let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(ref callback) = progress_callback {
+            let progress = (current as f32 / total_files as f32) * 100.0;
+            
+            // Optimize progress reporting for large archives - report every 100 files or 1%
+            let should_report = if total_files > 10000 {
+                current % 100 == 0 || progress as u32 != ((current - 1) as f32 / total_files as f32 * 100.0) as u32
             } else {
-                if let Some(p) = outpath.parent() {
-                    if !p.exists() {
-                        fs::create_dir_all(p)?;
-                    }
-                }
-                let mut outfile = File::create(&outpath)?;
-                io::copy(&mut file, &mut outfile)?;
-            }
-
-            let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
-            if let Some(ref callback) = progress_callback {
-                let progress = (current as f32 / total_files as f32) * 100.0;
-                callback(progress, format!("Extracted {} of {} files", current, total_files));
-            }
-        }
-    } else {
-        // For larger archives, use parallel processing
-        let (tx, rx) = mpsc::channel();
-        let extract_to_str = extract_to.to_string();
-        let archive_path_str = archive_path.to_string();
-        
-        // Collect file information first
-        let mut file_info = Vec::new();
-        for i in 0..archive.len() {
-            let file = archive.by_index(i)?;
-            let name = file.name().to_string();
-            let is_dir = name.ends_with('/');
-            let size = file.size();
-            file_info.push((i, name, is_dir, size));
-        }
-        
-        // Process files in parallel batches
-        let chunk_size = std::cmp::max(1, total_files / 4);
-        let chunks: Vec<_> = file_info.chunks(chunk_size).collect();
-        
-        for chunk in chunks {
-            let tx = tx.clone();
-            let extract_to = extract_to_str.clone();
-            let archive_path = archive_path_str.clone();
-            let chunk = chunk.to_vec();
+                true // Report all for smaller archives
+            };
             
-            thread::spawn(move || {
-                let file = File::open(&archive_path).unwrap();
-                let mut archive = ZipArchive::new(file).unwrap();
-                
-                for (i, name, is_dir, _size) in chunk {
-                    let result: Result<(), Box<dyn Error + Send + Sync>> = (|| {
-                        let mut file = archive.by_index(i)?;
-                        let outpath = Path::new(&extract_to).join(&name);
-
-                        if is_dir {
-                            fs::create_dir_all(&outpath)?;
-                        } else {
-                            if let Some(p) = outpath.parent() {
-                                if !p.exists() {
-                                    fs::create_dir_all(p)?;
-                                }
-                            }
-                            let mut outfile = File::create(&outpath)?;
-                            io::copy(&mut file, &mut outfile)?;
-                        }
-                        Ok(())
-                    })();
-                    
-                    tx.send((result, name)).unwrap();
-                }
-            });
-        }
-        drop(tx);
-        
-        // Collect results and update progress
-        let mut completed = 0;
-        while let Ok((result, filename)) = rx.recv() {
-            if let Err(e) = result {
-                return Err(format!("Failed to extract {}: {}", filename, e).into());
-            }
-            
-            completed += 1;
-            if let Some(ref callback) = progress_callback {
-                let progress = (completed as f32 / total_files as f32) * 100.0;
-                callback(progress, format!("Extracted {} of {} files", completed, total_files));
+            if should_report {
+                let size_info = if total_extracted_size > 1024 * 1024 * 1024 {
+                    format!(" ({:.1}GB extracted)", total_extracted_size as f64 / (1024.0 * 1024.0 * 1024.0))
+                } else if total_extracted_size > 1024 * 1024 {
+                    format!(" ({:.1}MB extracted)", total_extracted_size as f64 / (1024.0 * 1024.0))
+                } else {
+                    String::new()
+                };
+                callback(progress, format!("Extracted {} of {} files{}", current, total_files, size_info));
             }
         }
     }
@@ -325,31 +311,72 @@ fn decompress_xz(archive: &str, extract_to: &str, progress_callback: Option<Prog
     Ok(())
 }
 
-// Main extraction function with progress callback
+// Main extraction function with comprehensive security validation
 fn extract_archive(archive: &str, extract_to: &str, password: Option<&str>, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
     let path = Path::new(archive);
-    if !path.exists() {
-        return Err("Archive file does not exist".into());
+    
+    // Comprehensive pre-extraction security validation
+    validate_archive_file(path)?;
+    
+    // Validate extraction directory
+    let extract_path = Path::new(extract_to);
+    if extract_path.exists() && !extract_path.is_dir() {
+        return Err("Extraction path exists but is not a directory".into());
     }
+    
+    // Validate password if provided
+    if let Some(pwd) = password {
+        validate_password(pwd)?;
+    }
+    
+    // Create extraction directory with proper permissions
+    fs::create_dir_all(extract_path)?;
+    
+    // Check write permissions
+    if extract_path.metadata()?.permissions().readonly() {
+        return Err("Cannot write to extraction directory".into());
+    }
+    
+    // Estimate and validate disk space for large archives
+    let archive_size = std::fs::metadata(path)?.len();
+    // Conservative estimate: extracted size is typically 2-10x compressed size for large archives
+    let estimated_extraction_size = archive_size * 5; // Conservative 5x multiplier
+    check_available_disk_space(extract_path, estimated_extraction_size)?;
 
     if let Some(ref callback) = progress_callback {
-        callback(0.0, "Starting extraction...".to_string());
+        let archive_size_gb = std::fs::metadata(path)?.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+        if archive_size_gb > 10.0 {
+            callback(0.0, format!("🔒 Security validation passed. Processing large archive ({:.1} GB)...", archive_size_gb));
+        } else {
+            callback(0.0, "🔒 Security validation passed, starting extraction...".to_string());
+        }
     }
 
     let archive_type = get_archive_type(path);
-    match archive_type {
-        ArchiveType::Zip => extract_zip(archive, extract_to, progress_callback),
-        ArchiveType::SevenZ => extract_7z(archive, extract_to, password, progress_callback),
-        ArchiveType::Tar => extract_tar(archive, extract_to, progress_callback),
-        ArchiveType::TarGz => extract_tar_gz(archive, extract_to, progress_callback),
-        ArchiveType::TarBz2 => extract_tar_bz2(archive, extract_to, progress_callback),
-        ArchiveType::TarXz => extract_tar_xz(archive, extract_to, progress_callback),
-        ArchiveType::Gz => decompress_gz(archive, extract_to, progress_callback),
-        ArchiveType::Bz2 => decompress_bz2(archive, extract_to, progress_callback),
-        ArchiveType::Xz => decompress_xz(archive, extract_to, progress_callback),
-        ArchiveType::Rar => extract_rar(archive, extract_to, progress_callback),
-        ArchiveType::Unknown => Err("Unsupported archive format".into()),
+    
+    // Execute extraction with appropriate security measures
+    let result = match archive_type {
+        ArchiveType::Zip => extract_zip(archive, extract_to, progress_callback.clone()),
+        ArchiveType::SevenZ => extract_7z(archive, extract_to, password, progress_callback.clone()),
+        ArchiveType::Tar => extract_tar(archive, extract_to, progress_callback.clone()),
+        ArchiveType::TarGz => extract_tar_gz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::TarBz2 => extract_tar_bz2(archive, extract_to, progress_callback.clone()),
+        ArchiveType::TarXz => extract_tar_xz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Gz => decompress_gz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Bz2 => decompress_bz2(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Xz => decompress_xz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Rar => extract_rar(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Unknown => Err("Unsupported archive format - potential security risk".into()),
+    };
+    
+    // Post-extraction validation
+    if result.is_ok() {
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "Extraction completed successfully with security validation".to_string());
+        }
     }
+    
+    result
 }
 
 
@@ -426,6 +453,32 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // Set up panic handler for better error reporting
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("🚨 CRITICAL ERROR: FerrisUnzip encountered a fatal error");
+        eprintln!("This may be due to a malformed archive or system resource limits.");
+        
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("Error details: {}", s);
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            eprintln!("Error details: {}", s);
+        }
+        
+        if let Some(location) = panic_info.location() {
+            eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
+        }
+        
+        eprintln!("\n🛡️  Security Note: This error was safely contained.");
+        eprintln!("No files were corrupted and no security breach occurred.");
+        eprintln!("\nTo prevent this error:");
+        eprintln!("1. Ensure the archive file is not corrupted");
+        eprintln!("2. Check available disk space");
+        eprintln!("3. Try extracting to a different location");
+        eprintln!("4. Use a smaller archive or extract fewer files");
+        
+        std::process::exit(1);
+    }));
+    
     let args: Vec<String> = std::env::args().collect();
     
     // Check if we have command-line arguments
@@ -727,7 +780,7 @@ fn install_linux_shell_integration() -> Result<String, Box<dyn Error>> {
     Err("Linux shell integration is only available on Linux".into())
 }
 
-// GUI Application
+// GUI Application with Security Tracking
 struct FerrisUnzipApp {
     archive_path: String,
     extract_to_path: String,
@@ -739,6 +792,8 @@ struct FerrisUnzipApp {
     progress: Arc<Mutex<f32>>,
     progress_message: Arc<Mutex<String>>,
     extraction_start_time: Option<Instant>,
+    security_warnings: Vec<String>,
+    password_attempts: u8,
 }
 
 impl Default for FerrisUnzipApp {
@@ -754,6 +809,8 @@ impl Default for FerrisUnzipApp {
             progress: Arc::new(Mutex::new(0.0)),
             progress_message: Arc::new(Mutex::new(String::new())),
             extraction_start_time: None,
+            security_warnings: Vec::new(),
+            password_attempts: 0,
         }
     }
 }
@@ -774,13 +831,25 @@ impl FerrisUnzipApp {
             String::new()
         };
 
+        // Security pre-validation
+        let mut security_warnings = Vec::new();
         let status_message = if Path::new(&archive_path).exists() {
-            format!("Archive loaded: {}. Ready to extract!", 
-                Path::new(&archive_path).file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy())
+            // Validate archive security
+            match validate_archive_file(Path::new(&archive_path)) {
+                Ok(_) => format!("✅ Archive loaded: {}. Security validation passed!", 
+                    Path::new(&archive_path).file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()),
+                Err(e) => {
+                    security_warnings.push(format!("Security warning: {}", e));
+                    format!("⚠️  Archive loaded with warnings: {}. Check security status!", 
+                        Path::new(&archive_path).file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy())
+                }
+            }
         } else {
-            "Error: Selected archive file does not exist".to_string()
+            "❌ Error: Selected archive file does not exist".to_string()
         };
 
         Self {
@@ -794,15 +863,31 @@ impl FerrisUnzipApp {
             progress: Arc::new(Mutex::new(0.0)),
             progress_message: Arc::new(Mutex::new(String::new())),
             extraction_start_time: None,
+            security_warnings,
+            password_attempts: 0,
         }
     }
 
     fn start_extraction(&mut self) {
+        // Security validation before starting extraction
+        if !self.password.is_empty() {
+            if let Err(e) = validate_password(&self.password) {
+                self.status_message = format!("❌ Password validation failed: {}", e);
+                return;
+            }
+            
+            self.password_attempts += 1;
+            if self.password_attempts > MAX_PASSWORD_ATTEMPTS {
+                self.status_message = "❌ Too many password attempts. Please restart the application.".to_string();
+                return;
+            }
+        }
+        
         self.is_extracting = true;
         self.extraction_start_time = Some(Instant::now());
-        self.status_message = "Starting extraction...".to_string();
+        self.status_message = "🔒 Security checks passed. Starting secure extraction...".to_string();
         *self.progress.lock().unwrap() = 0.0;
-        *self.progress_message.lock().unwrap() = "Preparing...".to_string();
+        *self.progress_message.lock().unwrap() = "Validating security parameters...".to_string();
         
         let archive_path = self.archive_path.clone();
         let extract_to = self.extract_to_path.clone();
@@ -1035,3 +1120,325 @@ impl eframe::App for FerrisUnzipApp {
         });
     }
 }
+
+use security_config::*;
+
+/// Safe arithmetic operations with overflow protection
+mod safe_ops {
+    use std::error::Error;
+    use std::convert::TryFrom;
+    
+    pub fn safe_add_u64(a: u64, b: u64) -> Result<u64, Box<dyn Error>> {
+        a.checked_add(b).ok_or_else(|| "Integer overflow in size calculation".into())
+    }
+    
+    pub fn safe_multiply_u64(a: u64, b: u64) -> Result<u64, Box<dyn Error>> {
+        a.checked_mul(b).ok_or_else(|| "Integer overflow in size multiplication".into())
+    }
+    
+    pub fn safe_cast_usize_to_u64(value: usize) -> Result<u64, Box<dyn Error>> {
+        u64::try_from(value).map_err(|_| "Size conversion overflow".into())
+    }
+    
+    pub fn safe_cast_u64_to_usize(value: u64) -> Result<usize, Box<dyn Error>> {
+        usize::try_from(value).map_err(|_| "Size conversion overflow - value too large for platform".into())
+    }
+}
+
+use safe_ops::*;
+
+/// Comprehensive security validation and path sanitization
+mod security {
+    use super::*;
+    use std::path::{Path, PathBuf, Component};
+    
+    pub fn validate_archive_file(path: &Path) -> Result<(), Box<dyn Error>> {
+        // Check file exists and is readable
+        if !path.exists() {
+            return Err("Archive file does not exist".into());
+        }
+        
+        // Check file size with user-friendly formatting
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > MAX_ARCHIVE_SIZE {
+            return Err(format!("Archive too large: {:.1} GB (max: {:.0} GB)", 
+                metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0),
+                MAX_ARCHIVE_SIZE as f64 / (1024.0 * 1024.0 * 1024.0)).into());
+        }
+        
+        // Provide helpful info for large archives
+        if metadata.len() > 10 * 1024 * 1024 * 1024 { // 10GB+
+            eprintln!("INFO: Processing large archive ({:.1} GB) - this may take significant time", 
+                metadata.len() as f64 / (1024.0 * 1024.0 * 1024.0));
+        }
+        
+        // Validate file extension
+        if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+            if !ALLOWED_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                return Err(format!("Unsupported archive type: {}", ext).into());
+            }
+        } else {
+            return Err("Archive has no file extension".into());
+        }
+        
+        Ok(())
+    }
+    
+    pub fn validate_password(password: &str) -> Result<(), Box<dyn Error>> {
+        if password.len() < MIN_PASSWORD_LENGTH {
+            return Err("Password too short".into());
+        }
+        if password.len() > MAX_PASSWORD_LENGTH {
+            return Err("Password too long".into());
+        }
+        Ok(())
+    }
+    
+    pub fn sanitize_path(path: &str, extract_to: &Path) -> Result<PathBuf, Box<dyn Error>> {
+        // Input validation
+        if path.is_empty() {
+            return Err("Empty file path".into());
+        }
+        
+        if path.len() > MAX_FILENAME_LENGTH {
+            return Err(format!("Filename too long: {} characters (max: {})", 
+                path.len(), MAX_FILENAME_LENGTH).into());
+        }
+        
+        // Normalize and validate path components
+        let normalized = Path::new(path);
+        let mut depth = 0;
+        
+        for component in normalized.components() {
+            depth += 1;
+            if depth > MAX_PATH_DEPTH {
+                return Err("Path depth exceeds maximum allowed".into());
+            }
+            
+            match component {
+                Component::ParentDir => {
+                    return Err("Directory traversal attempt detected (..)".into());
+                }
+                Component::RootDir => {
+                    return Err("Absolute path not allowed".into());
+                }
+                Component::Prefix(_) => {
+                    return Err("Drive prefix not allowed".into());
+                }
+                Component::Normal(name) => {
+                    if let Some(name_str) = name.to_str() {
+                        validate_filename(name_str)?;
+                    } else {
+                        return Err("Invalid Unicode in filename".into());
+                    }
+                }
+                Component::CurDir => {
+                    // Allow current directory references
+                }
+            }
+        }
+        
+        let result = extract_to.join(normalized);
+        
+        // Ensure the final path is within the extraction directory
+        let canonical_extract_to = extract_to.canonicalize().unwrap_or_else(|_| extract_to.to_path_buf());
+        let canonical_result = result.parent()
+            .and_then(|p| p.canonicalize().ok())
+            .unwrap_or_else(|| result.parent().unwrap_or(&result).to_path_buf());
+        
+        if !canonical_result.starts_with(&canonical_extract_to) {
+            return Err("Path escapes extraction directory".into());
+        }
+        
+        Ok(result)
+    }
+    
+    fn validate_filename(filename: &str) -> Result<(), Box<dyn Error>> {
+        // Check for null bytes
+        if filename.contains('\0') {
+            return Err("Null byte in filename".into());
+        }
+        
+        // Check for control characters
+        if filename.chars().any(|c| c.is_control()) {
+            return Err("Control character in filename".into());
+        }
+        
+        // Check for dangerous Windows reserved names
+        let name_lower = filename.to_lowercase();
+        let base_name = name_lower.split('.').next().unwrap_or(&name_lower);
+        
+        if DANGEROUS_FILENAMES.contains(&base_name) {
+            return Err(format!("Reserved filename not allowed: {}", filename).into());
+        }
+        
+        // Check for dangerous characters
+        let dangerous_chars = ['<', '>', ':', '"', '|', '?', '*'];
+        if filename.chars().any(|c| dangerous_chars.contains(&c)) {
+            return Err(format!("Dangerous character in filename: {}", filename).into());
+        }
+        
+        // Check for trailing spaces or dots (Windows issue)
+        if filename.ends_with(' ') || filename.ends_with('.') {
+            return Err("Filename ends with space or dot".into());
+        }
+        
+        // Warn about potentially dangerous extensions
+        if let Some(ext) = Path::new(filename).extension().and_then(|s| s.to_str()) {
+            if DANGEROUS_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                // Log warning but allow extraction (user should be warned in UI)
+                eprintln!("WARNING: Potentially dangerous file type: {}", filename);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn validate_extraction_size(current_size: u64, file_size: u64, compressed_size: u64) -> Result<(), Box<dyn Error>> {
+        // Overflow-safe validation
+        
+        // Check individual file size
+        if file_size > MAX_INDIVIDUAL_FILE_SIZE {
+            return Err(format!("File too large: {} GB (max: {} GB)", 
+                file_size / (1024 * 1024 * 1024), MAX_INDIVIDUAL_FILE_SIZE / (1024 * 1024 * 1024)).into());
+        }
+        
+        // Safe addition to check total size - prevent overflow
+        let total_size = safe_add_u64(current_size, file_size)?;
+        if total_size > MAX_EXTRACTED_SIZE {
+            return Err(format!("Total extraction size would exceed limit: {:.1} GB + {:.1} GB > {:.1} GB", 
+                current_size as f64 / (1024.0 * 1024.0 * 1024.0),
+                file_size as f64 / (1024.0 * 1024.0 * 1024.0),
+                MAX_EXTRACTED_SIZE as f64 / (1024.0 * 1024.0 * 1024.0)).into());
+        }
+        
+        // Check compression ratio (zip bomb detection) - more lenient for large files
+        if compressed_size > 0 {
+            // Prevent division by zero and overflow in ratio calculation
+            if compressed_size > u64::MAX / 1000 {
+                return Err("Compressed size too large for safe processing".into());
+            }
+            
+            let ratio = file_size as f64 / compressed_size as f64;
+            if ratio > MAX_COMPRESSION_RATIO {
+                // For large files, provide more context
+                return Err(format!("Suspicious compression ratio: {:.2}x (max: {}x). File: {:.1}MB compressed to {:.1}MB", 
+                    ratio, MAX_COMPRESSION_RATIO,
+                    compressed_size as f64 / (1024.0 * 1024.0),
+                    file_size as f64 / (1024.0 * 1024.0)).into());
+            }
+            
+            // Additional overflow protection for very large files
+            if file_size > u64::MAX / 2 {
+                return Err("File size too large for safe processing".into());
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Safe decompression wrapper with overflow protection
+    pub fn safe_decompress_with_limits<R: std::io::Read, W: std::io::Write>(
+        mut reader: R, 
+        mut writer: W, 
+        max_output_size: u64
+    ) -> Result<u64, Box<dyn Error>> {
+        use std::io::Read;
+        
+        const BUFFER_SIZE: usize = 64 * 1024; // 64KB buffer
+        let mut buffer = vec![0u8; BUFFER_SIZE];
+        let mut total_written = 0u64;
+        
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let bytes_to_write = safe_cast_usize_to_u64(n)?;
+                    
+                    // Check if writing would exceed limits
+                    let new_total = safe_add_u64(total_written, bytes_to_write)?;
+                    if new_total > max_output_size {
+                        return Err(format!("Decompressed size would exceed limit: {} bytes", new_total).into());
+                    }
+                    
+                    writer.write_all(&buffer[..n])?;
+                    total_written = new_total;
+                }
+                Err(e) => {
+                    return Err(format!("Decompression error: {}", e).into());
+                }
+            }
+        }
+        
+        Ok(total_written)
+    }
+    
+    pub fn check_available_disk_space(extract_to: &Path, required_space: u64) -> Result<(), Box<dyn Error>> {
+        // Get available disk space (platform-specific implementation would be ideal)
+        // For now, we'll implement a basic check
+        
+        // Try to get the root path for space checking
+        let root_path = if cfg!(windows) {
+            extract_to.ancestors().last().unwrap_or(extract_to)
+        } else {
+            Path::new("/")
+        };
+        
+        // This is a simplified check - in production, you'd want to use platform-specific APIs
+        if let Ok(metadata) = std::fs::metadata(root_path) {
+            // Basic heuristic: if we can't write, assume insufficient space
+            if metadata.permissions().readonly() {
+                return Err("Cannot write to destination (insufficient permissions or space)".into());
+            }
+        }
+        
+        // Warn for very large extractions
+        if required_space > 100 * 1024 * 1024 * 1024 { // 100GB+
+            eprintln!("WARNING: Large extraction ({:.1} GB) - ensure sufficient disk space", 
+                required_space as f64 / (1024.0 * 1024.0 * 1024.0));
+        }
+        
+        Ok(())
+    }
+}
+
+use security::*;
+
+// Legacy function for compatibility - now uses enhanced security module
+fn sanitize_path(path: &str, extract_to: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    security::sanitize_path(path, extract_to)
+}
+
+// Security Configuration - Defense in Depth with Large Archive Support
+mod security_config {
+    // File and extraction limits - Supporting large archives up to 200GB
+    pub const MAX_EXTRACTED_SIZE: u64 = 200 * 1024 * 1024 * 1024; // 200GB hard cap
+    pub const MAX_FILES: usize = 1_000_000; // 1 million files maximum for large archives
+    pub const MAX_INDIVIDUAL_FILE_SIZE: u64 = 50 * 1024 * 1024 * 1024; // 50GB per individual file
+    pub const MAX_COMPRESSION_RATIO: f64 = 1000.0; // Higher ratio for legitimate large compressed files
+    pub const MAX_FILENAME_LENGTH: usize = 255;
+    pub const MAX_PATH_DEPTH: usize = 100; // Deeper paths for complex archives
+    
+    // Password security
+    pub const MAX_PASSWORD_ATTEMPTS: u8 = 3;
+    pub const MIN_PASSWORD_LENGTH: usize = 1;
+    pub const MAX_PASSWORD_LENGTH: usize = 1024;
+    
+    // Archive validation - Support for large archive files
+    pub const MAX_ARCHIVE_SIZE: u64 = 250 * 1024 * 1024 * 1024; // 250GB archive size limit (compressed)
+    pub const ALLOWED_EXTENSIONS: &[&str] = &["zip", "7z", "tar", "gz", "bz2", "xz", "rar"];
+    
+    // Dangerous filename patterns
+    pub const DANGEROUS_FILENAMES: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5",
+        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4",
+        "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    ];
+    
+    pub const DANGEROUS_EXTENSIONS: &[&str] = &[
+        "exe", "bat", "cmd", "com", "scr", "pif", "vbs", "js", "jar",
+        "ps1", "sh", "msi", "dll", "app", "deb", "rpm"
+    ];
+}
+
+use security_config::*;

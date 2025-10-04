@@ -199,7 +199,7 @@ fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>, progress_
     Ok(())
 }
 
-// Extract plain TAR archive with progress callback
+// Extract plain TAR archive with progress callback and security validation
 fn extract_tar(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
     let file = File::open(archive)?;
     let mut archive = TarArchive::new(file);
@@ -208,6 +208,12 @@ fn extract_tar(archive: &str, extract_to: &str, progress_callback: Option<Progre
         callback(10.0, "Starting TAR extraction...".to_string());
     }
     
+    // Enable security features for tar extraction
+    archive.set_preserve_permissions(false);
+    archive.set_preserve_mtime(true);
+    archive.set_unpack_xattrs(false);
+    
+    // Extract with built-in path traversal protection
     archive.unpack(extract_to)?;
     
     if let Some(ref callback) = progress_callback {
@@ -217,7 +223,7 @@ fn extract_tar(archive: &str, extract_to: &str, progress_callback: Option<Progre
 }
 
 
-// Extract TAR archive with compression and progress callback
+// Extract TAR archive with compression, progress callback, and security validation
 fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read, progress_callback: Option<ProgressCallback>, format_name: &str) -> Result<(), Box<dyn Error>> {
     let mut archive = TarArchive::new(decoder);
     
@@ -225,6 +231,12 @@ fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read, progress_cal
         callback(50.0, format!("Extracting {} archive...", format_name));
     }
     
+    // Enable security features for tar extraction
+    archive.set_preserve_permissions(false);
+    archive.set_preserve_mtime(true);
+    archive.set_unpack_xattrs(false);
+    
+    // Extract with built-in path traversal protection
     archive.unpack(extract_to)?;
     
     if let Some(ref callback) = progress_callback {
@@ -535,7 +547,8 @@ fn extract_rar(archive_path: &str, extract_to: &str, progress_callback: Option<P
     let mut processed_count = 0;
 
     // Ensure the extraction directory exists
-    fs::create_dir_all(extract_to)?;
+    let extract_to_path = Path::new(extract_to);
+    fs::create_dir_all(extract_to_path)?;
 
     if let Some(ref callback) = progress_callback {
         callback(5.0, "Starting RAR extraction...".to_string());
@@ -548,9 +561,12 @@ fn extract_rar(archive_path: &str, extract_to: &str, progress_callback: Option<P
         temp_archive = header.skip()?;
     }
 
-    // Second pass: actual extraction with progress
+    // Second pass: actual extraction with progress and security validation
     while let Some(header) = archive.read_header()? {
-        let dest_path = Path::new(extract_to).join(header.entry().filename.to_string_lossy().as_ref());
+        let filename = header.entry().filename.to_string_lossy();
+        
+        // Sanitize the output path to prevent path traversal attacks
+        let dest_path = sanitize_path(&filename, extract_to_path)?;
 
         if header.entry().is_directory() {
             fs::create_dir_all(&dest_path)?;
@@ -766,9 +782,9 @@ fn install_linux_shell_integration() -> Result<String, Box<dyn Error>> {
     file.write_all(desktop_entry_content.as_bytes())?;
     
     // Update desktop database if available
-    if let Ok(_) = std::process::Command::new("update-desktop-database")
+    if std::process::Command::new("update-desktop-database")
         .arg(desktop_entry_dir)
-        .output() {
+        .output().is_ok() {
         // Command executed successfully
     }
     
@@ -792,6 +808,7 @@ struct FerrisUnzipApp {
     progress: Arc<Mutex<f32>>,
     progress_message: Arc<Mutex<String>>,
     extraction_start_time: Option<Instant>,
+    #[allow(dead_code)] // Reserved for future security warning features
     security_warnings: Vec<String>,
     password_attempts: u8,
 }
@@ -1132,6 +1149,7 @@ mod safe_ops {
         a.checked_add(b).ok_or_else(|| "Integer overflow in size calculation".into())
     }
     
+    #[allow(dead_code)] // Reserved for future use in compression ratio calculations
     pub fn safe_multiply_u64(a: u64, b: u64) -> Result<u64, Box<dyn Error>> {
         a.checked_mul(b).ok_or_else(|| "Integer overflow in size multiplication".into())
     }
@@ -1140,6 +1158,7 @@ mod safe_ops {
         u64::try_from(value).map_err(|_| "Size conversion overflow".into())
     }
     
+    #[allow(dead_code)] // Reserved for future platform-specific size operations
     pub fn safe_cast_u64_to_usize(value: u64) -> Result<usize, Box<dyn Error>> {
         usize::try_from(value).map_err(|_| "Size conversion overflow - value too large for platform".into())
     }
@@ -1343,8 +1362,6 @@ mod security {
         mut writer: W, 
         max_output_size: u64
     ) -> Result<u64, Box<dyn Error>> {
-        use std::io::Read;
-        
         const BUFFER_SIZE: usize = 64 * 1024; // 64KB buffer
         let mut buffer = vec![0u8; BUFFER_SIZE];
         let mut total_written = 0u64;
@@ -1440,5 +1457,3 @@ mod security_config {
         "ps1", "sh", "msi", "dll", "app", "deb", "rpm"
     ];
 }
-
-use security_config::*;

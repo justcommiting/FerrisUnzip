@@ -621,7 +621,7 @@ fn run_gui(archive_file: Option<String>) -> Result<(), Box<dyn Error>> {
                     let prog_msg = progress_message_timer.lock().unwrap().clone();
                     ui.set_progress(prog);
                     ui.set_progress_message(prog_msg.into());
-                    
+
                     // Check if extraction is complete
                     if let Ok(mut result) = extraction_result_timer.try_lock() {
                         if let Some(res) = result.take() {
@@ -634,6 +634,7 @@ fn run_gui(archive_file: Option<String>) -> Result<(), Box<dyn Error>> {
                                     ui.set_status_error(false);
                                     ui.set_progress(100.0);
                                     ui.set_progress_message("Completed!".into());
+                                    // Keep completed state visible
                                 }
                                 Err(e) => {
                                     ui.set_status_message(format!("✗ Extraction failed: {}", e).into());
@@ -641,10 +642,13 @@ fn run_gui(archive_file: Option<String>) -> Result<(), Box<dyn Error>> {
                                     ui.set_status_error(true);
                                     ui.set_progress(0.0);
                                     ui.set_progress_message("Failed".into());
+                                    // Keep failed state visible
                                 }
                             }
                         }
                     }
+                } else {
+                   return;
                 }
             }
         },

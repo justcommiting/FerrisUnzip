@@ -24,6 +24,30 @@ use std::time::Instant;
 // Progress callback type
 type ProgressCallback = Arc<dyn Fn(f32, String) + Send + Sync>;
 
+// Extraction options for fine-grained control
+#[derive(Clone, Debug)]
+struct ExtractionOptions {
+    /// Allow size mismatches (useful for ISOs with padding from burned discs)
+    allow_padding: bool,
+    /// Maximum padding tolerance in bytes (default 2048 bytes for ISO sectors)
+    max_padding_tolerance: u64,
+    /// Skip validation for faster extraction
+    skip_validation: bool,
+    /// Be lenient with compression ratios for legitimate large files
+    lenient_compression_check: bool,
+}
+
+impl Default for ExtractionOptions {
+    fn default() -> Self {
+        Self {
+            allow_padding: true,  // Enable by default for versatility
+            max_padding_tolerance: 2048 * 1024, // 2MB default tolerance (for ISO sector padding)
+            skip_validation: false,
+            lenient_compression_check: false,
+        }
+    }
+}
+
 // Enum to represent supported archive types
 #[derive(Debug)]
 enum ArchiveType {
@@ -88,9 +112,80 @@ fn get_archive_type(path: &Path) -> ArchiveType {
     }
 }
 
+/// Modular extraction utilities for better code organization
+mod extraction_utils {
+    use super::*;
+    
+    /// Common progress reporting helper
+    pub fn report_progress(
+        callback: &Option<ProgressCallback>,
+        progress: f32,
+        message: String,
+    ) {
+        if let Some(ref cb) = callback {
+            cb(progress, message);
+        }
+    }
+    
+    /// Calculate and format file size for display
+    pub fn format_size(bytes: u64) -> String {
+        if bytes > 1024 * 1024 * 1024 {
+            format!("{:.1}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+        } else if bytes > 1024 * 1024 {
+            format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+        } else if bytes > 1024 {
+            format!("{:.1}KB", bytes as f64 / 1024.0)
+        } else {
+            format!("{} bytes", bytes)
+        }
+    }
+    
+    /// Prepare extraction directory - common pre-processing
+    pub fn prepare_extraction_dir(extract_to: &Path) -> Result<(), Box<dyn Error>> {
+        if extract_to.exists() && !extract_to.is_dir() {
+            return Err("Extraction path exists but is not a directory".into());
+        }
+        
+        fs::create_dir_all(extract_to)?;
+        
+        // Check write permissions
+        if extract_to.metadata()?.permissions().readonly() {
+            return Err("Cannot write to extraction directory".into());
+        }
+        
+        Ok(())
+    }
+    
+    /// Common extraction result handler
+    pub fn finalize_extraction(
+        callback: &Option<ProgressCallback>,
+        format_name: &str,
+        success: bool,
+    ) {
+        if let Some(ref cb) = callback {
+            if success {
+                cb(100.0, format!("{} extraction completed successfully", format_name));
+            } else {
+                cb(0.0, format!("{} extraction failed", format_name));
+            }
+        }
+    }
+}
+
+
 
 // Extract ZIP archive (non-encrypted) with progress tracking
 fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
+    extract_zip_with_options(archive_path, extract_to, progress_callback, ExtractionOptions::default())
+}
+
+// Extract ZIP archive with custom options for versatility
+fn extract_zip_with_options(
+    archive_path: &str, 
+    extract_to: &str, 
+    progress_callback: Option<ProgressCallback>,
+    options: ExtractionOptions
+) -> Result<(), Box<dyn Error>> {
     // Pre-extraction security validation
     let archive_path_buf = Path::new(archive_path);
     validate_archive_file(archive_path_buf)?;
@@ -117,8 +212,15 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
         let compressed_size = file.compressed_size();
         let file_name = file.name().to_string();
         
-        // Enhanced security validation with overflow protection
-        validate_extraction_size(total_extracted_size, file_size, compressed_size)?;
+        // Enhanced security validation with overflow protection (skip if requested)
+        if !options.skip_validation {
+            validate_extraction_size_with_options(
+                total_extracted_size, 
+                file_size, 
+                compressed_size,
+                options.lenient_compression_check
+            )?;
+        }
         
         // Safe addition with overflow protection
         total_extracted_size = safe_add_u64(total_extracted_size, file_size)?;
@@ -135,20 +237,43 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
                 }
             }
             
-            // Safe extraction with overflow protection
+            // Safe extraction with overflow and padding tolerance
             let mut outfile = File::create(&outpath)?;
-            let limited_reader = file.take(file_size);
+            let limited_reader = file.take(file_size + options.max_padding_tolerance);
             
-            // Use safe decompression wrapper to prevent overflow
+            // Use safe decompression wrapper with padding support
             let actual_size = safe_decompress_with_limits(
                 limited_reader,
                 &mut outfile,
-                file_size
+                file_size + options.max_padding_tolerance
             )?;
             
-            // Verify actual extracted size matches expected
-            if actual_size != file_size {
+            // Verify actual extracted size with padding tolerance
+            if !options.allow_padding && actual_size != file_size {
                 return Err(format!("Size mismatch: expected {}, got {} bytes", file_size, actual_size).into());
+            } else if options.allow_padding {
+                // Check if size is within acceptable tolerance
+                let size_diff = if actual_size > file_size {
+                    actual_size - file_size
+                } else {
+                    file_size - actual_size
+                };
+                
+                if size_diff > options.max_padding_tolerance {
+                    return Err(format!(
+                        "Size mismatch exceeds tolerance: expected {}, got {} bytes (diff: {} bytes, max tolerance: {} bytes)", 
+                        file_size, actual_size, size_diff, options.max_padding_tolerance
+                    ).into());
+                } else if size_diff > 0 {
+                    // Log padding detected but continue extraction
+                    if let Some(ref callback) = progress_callback {
+                        callback(
+                            (i as f32 / total_files as f32) * 100.0,
+                            format!("Note: File '{}' has {} bytes padding (common in ISO files from burned discs)", 
+                                file_name, size_diff)
+                        );
+                    }
+                }
             }
         }
 
@@ -180,11 +305,11 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
 
 // Extract 7Z archive (supports encryption with password) with progress callback
 fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn std::error::Error>> {
+    use extraction_utils::*;
+    
     let path = Path::new(archive);
 
-    if let Some(ref callback) = progress_callback {
-        callback(10.0, "Initializing 7Z extraction...".to_string());
-    }
+    report_progress(&progress_callback, 10.0, "Initializing 7Z extraction...".to_string());
 
     if let Some(pwd) = password {
         let password = Password::from(pwd);
@@ -193,43 +318,39 @@ fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>, progress_
         decompress_file_with_password(path, extract_to, Password::from(""))?;
     }
     
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "7Z extraction completed".to_string());
-    }
+    finalize_extraction(&progress_callback, "7Z", true);
     Ok(())
 }
 
 // Extract plain TAR archive with progress callback
 fn extract_tar(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
+    use extraction_utils::*;
+    
     let file = File::open(archive)?;
     let mut archive = TarArchive::new(file);
     
-    if let Some(ref callback) = progress_callback {
-        callback(10.0, "Starting TAR extraction...".to_string());
-    }
+    report_progress(&progress_callback, 10.0, "Starting TAR extraction...".to_string());
     
+    prepare_extraction_dir(Path::new(extract_to))?;
     archive.unpack(extract_to)?;
     
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "TAR extraction completed".to_string());
-    }
+    finalize_extraction(&progress_callback, "TAR", true);
     Ok(())
 }
 
 
 // Extract TAR archive with compression and progress callback
 fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read, progress_callback: Option<ProgressCallback>, format_name: &str) -> Result<(), Box<dyn Error>> {
+    use extraction_utils::*;
+    
     let mut archive = TarArchive::new(decoder);
     
-    if let Some(ref callback) = progress_callback {
-        callback(50.0, format!("Extracting {} archive...", format_name));
-    }
+    report_progress(&progress_callback, 50.0, format!("Extracting {} archive...", format_name));
     
+    prepare_extraction_dir(Path::new(extract_to))?;
     archive.unpack(extract_to)?;
     
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, format!("{} extraction completed", format_name));
-    }
+    finalize_extraction(&progress_callback, format_name, true);
     Ok(())
 }
 
@@ -256,58 +377,52 @@ fn extract_tar_xz(archive: &str, extract_to: &str, progress_callback: Option<Pro
 
 // Decompress single-file GZ with progress callback
 fn decompress_gz(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = GzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
-    
-    if let Some(ref callback) = progress_callback {
-        callback(25.0, "Decompressing GZ file...".to_string());
-    }
-    
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "GZ decompression completed".to_string());
-    }
-    Ok(())
+    decompress_single_file(archive, extract_to, progress_callback, "GZ", |file| {
+        Box::new(GzDecoder::new(file)) as Box<dyn io::Read>
+    })
 }
 
 // Decompress single-file BZ2 with progress callback
 fn decompress_bz2(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = BzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
-    
-    if let Some(ref callback) = progress_callback {
-        callback(25.0, "Decompressing BZ2 file...".to_string());
-    }
-    
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "BZ2 decompression completed".to_string());
-    }
-    Ok(())
+    decompress_single_file(archive, extract_to, progress_callback, "BZ2", |file| {
+        Box::new(BzDecoder::new(file)) as Box<dyn io::Read>
+    })
 }
 
 // Decompress single-file XZ with progress callback
 fn decompress_xz(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = XzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    decompress_single_file(archive, extract_to, progress_callback, "XZ", |file| {
+        Box::new(XzDecoder::new(file)) as Box<dyn io::Read>
+    })
+}
+
+// Common single-file decompression logic - more modular approach
+fn decompress_single_file<F>(
+    archive: &str,
+    extract_to: &str,
+    progress_callback: Option<ProgressCallback>,
+    format_name: &str,
+    decoder_factory: F,
+) -> Result<(), Box<dyn Error>>
+where
+    F: FnOnce(File) -> Box<dyn io::Read>,
+{
+    use extraction_utils::*;
     
-    if let Some(ref callback) = progress_callback {
-        callback(25.0, "Decompressing XZ file...".to_string());
-    }
+    let file = File::open(archive)?;
+    let mut decoder = decoder_factory(file);
+    let output_file = Path::new(extract_to).join(
+        Path::new(archive)
+            .file_stem()
+            .ok_or("Invalid filename")?
+    );
+    
+    report_progress(&progress_callback, 25.0, format!("Decompressing {} file...", format_name));
     
     let mut outfile = File::create(output_file)?;
     io::copy(&mut decoder, &mut outfile)?;
     
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "XZ decompression completed".to_string());
-    }
+    finalize_extraction(&progress_callback, format_name, true);
     Ok(())
 }
 
@@ -530,16 +645,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 
 fn extract_rar(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
+    use extraction_utils::*;
+    
     let mut archive = Archive::new(archive_path).open_for_processing()?;
     let mut file_count = 0;
     let mut processed_count = 0;
 
     // Ensure the extraction directory exists
-    fs::create_dir_all(extract_to)?;
+    prepare_extraction_dir(Path::new(extract_to))?;
 
-    if let Some(ref callback) = progress_callback {
-        callback(5.0, "Starting RAR extraction...".to_string());
-    }
+    report_progress(&progress_callback, 5.0, "Starting RAR extraction...".to_string());
 
     // First pass: count total files for progress tracking
     let mut temp_archive = Archive::new(archive_path).open_for_processing()?;
@@ -575,10 +690,7 @@ fn extract_rar(archive_path: &str, extract_to: &str, progress_callback: Option<P
         }
     }
 
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "RAR extraction completed".to_string());
-    }
-
+    finalize_extraction(&progress_callback, "RAR", true);
     Ok(())
 }
 
@@ -1295,6 +1407,15 @@ mod security {
     }
     
     pub fn validate_extraction_size(current_size: u64, file_size: u64, compressed_size: u64) -> Result<(), Box<dyn Error>> {
+        validate_extraction_size_with_options(current_size, file_size, compressed_size, false)
+    }
+    
+    pub fn validate_extraction_size_with_options(
+        current_size: u64, 
+        file_size: u64, 
+        compressed_size: u64,
+        lenient_compression_check: bool
+    ) -> Result<(), Box<dyn Error>> {
         // Overflow-safe validation
         
         // Check individual file size
@@ -1320,10 +1441,16 @@ mod security {
             }
             
             let ratio = file_size as f64 / compressed_size as f64;
-            if ratio > MAX_COMPRESSION_RATIO {
+            let max_ratio = if lenient_compression_check {
+                MAX_COMPRESSION_RATIO * 2.0 // Double the tolerance for lenient mode
+            } else {
+                MAX_COMPRESSION_RATIO
+            };
+            
+            if ratio > max_ratio {
                 // For large files, provide more context
                 return Err(format!("Suspicious compression ratio: {:.2}x (max: {}x). File: {:.1}MB compressed to {:.1}MB", 
-                    ratio, MAX_COMPRESSION_RATIO,
+                    ratio, max_ratio,
                     compressed_size as f64 / (1024.0 * 1024.0),
                     file_size as f64 / (1024.0 * 1024.0)).into());
             }

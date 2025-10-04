@@ -896,9 +896,10 @@ fn install_linux_shell_integration() -> Result<String, Box<dyn Error>> {
     file.write_all(desktop_entry_content.as_bytes())?;
     
     // Update desktop database if available
-    if let Ok(_) = std::process::Command::new("update-desktop-database")
+    if std::process::Command::new("update-desktop-database")
         .arg(desktop_entry_dir)
-        .output() {
+        .output()
+        .is_ok() {
         // Command executed successfully
     }
     

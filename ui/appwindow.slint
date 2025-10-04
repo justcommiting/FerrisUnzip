@@ -1,0 +1,231 @@
+import { Button, VerticalBox, HorizontalBox, LineEdit, ProgressIndicator, CheckBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "FerrisUnzip - Archive Extractor";
+    preferred-width: 500px;
+    preferred-height: 550px;
+    min-width: 400px;
+    min-height: 450px;
+
+    // Properties for data binding
+    in-out property <string> archive-path;
+    in-out property <string> extract-to-path;
+    in-out property <string> password;
+    in-out property <string> status-message: "Select an archive file to extract";
+    in-out property <string> install-message;
+    in-out property <string> progress-message;
+    in-out property <float> progress: 0.0;
+    in-out property <bool> is-extracting: false;
+    in-out property <bool> show-context-menu-indicator: false;
+    
+    // Properties for color-coded status
+    in-out property <bool> status-success: false;
+    in-out property <bool> status-error: false;
+    in-out property <bool> status-extracting: false;
+    in-out property <bool> install-success: false;
+
+    // Callbacks
+    callback browse-archive();
+    callback browse-extract-to();
+    callback extract-archive();
+    callback install-context-menu();
+
+    VerticalBox {
+        padding: 20px;
+        spacing: 10px;
+
+        // Header
+        Text {
+            text: "FerrisUnzip - Archive Extractor";
+            font-size: 18px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        // Context menu indicator
+        if show-context-menu-indicator: HorizontalBox {
+            Text {
+                text: "📂 Launched from context menu - archive pre-selected";
+                color: #0078c8;
+                font-size: 12px;
+            }
+        }
+
+        Rectangle { height: 10px; }
+
+        // Archive file selection
+        HorizontalBox {
+            spacing: 10px;
+            alignment: start;
+            
+            Text {
+                text: "Archive file:";
+                vertical-alignment: center;
+                width: 100px;
+            }
+            
+            Button {
+                text: "Browse...";
+                clicked => { browse-archive(); }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            
+            Text {
+                text: "Path:";
+                vertical-alignment: center;
+                width: 100px;
+            }
+            
+            LineEdit {
+                text <=> archive-path;
+                placeholder-text: "Select an archive file...";
+            }
+        }
+
+        Rectangle { height: 5px; }
+
+        // Extract to selection
+        HorizontalBox {
+            spacing: 10px;
+            alignment: start;
+            
+            Text {
+                text: "Extract to:";
+                vertical-alignment: center;
+                width: 100px;
+            }
+            
+            Button {
+                text: "Browse...";
+                clicked => { browse-extract-to(); }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 10px;
+            
+            Text {
+                text: "Path:";
+                vertical-alignment: center;
+                width: 100px;
+            }
+            
+            LineEdit {
+                text <=> extract-to-path;
+                placeholder-text: "Select extraction destination...";
+            }
+        }
+
+        Rectangle { height: 5px; }
+
+        // Password field
+        HorizontalBox {
+            spacing: 10px;
+            
+            Text {
+                text: "Password:";
+                vertical-alignment: center;
+                width: 100px;
+            }
+            
+            LineEdit {
+                text <=> password;
+                placeholder-text: "Leave blank for non-encrypted archives";
+            }
+        }
+
+        Rectangle { height: 10px; }
+
+        // Progress bar (visible when extracting)
+        if is-extracting: VerticalBox {
+            spacing: 5px;
+            
+            Text {
+                text: "Extraction Progress:";
+                font-weight: 600;
+            }
+            
+            ProgressIndicator {
+                progress: progress / 100.0;
+            }
+            
+            Text {
+                text: progress-message;
+                font-size: 12px;
+            }
+            
+            Rectangle { height: 5px; }
+        }
+
+        // Extract button
+        HorizontalBox {
+            spacing: 10px;
+            
+            Button {
+                text: is-extracting ? "Extracting..." : "Extract Archive";
+                enabled: archive-path != "" && extract-to-path != "" && !is-extracting;
+                clicked => { extract-archive(); }
+            }
+        }
+
+        Rectangle { height: 10px; }
+
+        // Install button
+        Button {
+            text: "Install into context menu (Right-click on files)";
+            clicked => { install-context-menu(); }
+        }
+
+        Rectangle { height: 5px; }
+
+        // Status message
+        Rectangle {
+            height: 1px;
+            background: #d0d0d0;
+        }
+
+        Rectangle { height: 5px; }
+
+        Text {
+            text: status-message;
+            color: status-success ? #009600 : 
+                   (status-error ? #c80000 : 
+                   (status-extracting ? #0064c8 : #646464));
+            wrap: word-wrap;
+            font-size: 13px;
+        }
+
+        // Install message
+        if install-message != "": Text {
+            text: install-message;
+            color: install-success ? #009600 : #c80000;
+            wrap: word-wrap;
+            font-size: 12px;
+        }
+
+        Rectangle { height: 5px; }
+
+        // Supported formats
+        Rectangle {
+            height: 1px;
+            background: #d0d0d0;
+        }
+
+        Rectangle { height: 5px; }
+
+        Text {
+            text: "Supported formats: ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, RAR";
+            font-size: 11px;
+            color: #646464;
+        }
+
+        Text {
+            text: "Version 1.0 - Cross-platform archive extractor";
+            font-size: 11px;
+            color: #646464;
+        }
+    }
+}

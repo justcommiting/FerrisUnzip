@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use clap::{Arg, Command};
-use eframe::egui;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io;
@@ -19,7 +18,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::env;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+
+slint::include_modules!();
 
 // Progress callback type
 type ProgressCallback = Arc<dyn Fn(f32, String) + Send + Sync>;
@@ -444,35 +444,218 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Err("Invalid file path".into());
             }
             
-            let options = eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_inner_size([500.0, 400.0])
-                    .with_min_inner_size([400.0, 300.0])
-                    .with_title("FerrisUnzip - Extract Archive"),
-                ..Default::default()
-            };
-            
-            eframe::run_native(
-                "FerrisUnzip",
-                options,
-                Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::new_with_file(archive_file.clone())))),
-            ).map_err(|e| format!("Failed to run GUI: {}", e).into())
+            run_gui_with_file(archive_file.clone())
         }
     } else {
         // GUI mode without file
-        let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([500.0, 400.0])
-                .with_min_inner_size([400.0, 300.0]),
-            ..Default::default()
-        };
-        
-        eframe::run_native(
-            "FerrisUnzip",
-            options,
-            Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
-        ).map_err(|e| format!("Failed to run GUI: {}", e).into())
+        run_gui(None)
     }
+}
+
+fn run_gui(archive_file: Option<String>) -> Result<(), Box<dyn Error>> {
+    let ui = AppWindow::new()?;
+    
+    // State management
+    let extraction_result: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
+    let progress = Arc::new(Mutex::new(0.0f32));
+    let progress_message = Arc::new(Mutex::new(String::new()));
+    
+    // If launched with a file, set it up
+    if let Some(archive_path) = archive_file {
+        ui.set_archive_path(archive_path.clone().into());
+        
+        // Auto-set extraction path based on archive location
+        if let Some(archive_path_obj) = Path::new(&archive_path).parent() {
+            if let Some(filename) = Path::new(&archive_path).file_stem() {
+                let extract_to = archive_path_obj
+                    .join(filename)
+                    .display()
+                    .to_string();
+                ui.set_extract_to_path(extract_to.into());
+            }
+        }
+        
+        let status = if Path::new(&archive_path).exists() {
+            format!("Archive loaded: {}. Ready to extract!", 
+                Path::new(&archive_path).file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy())
+        } else {
+            "Error: Selected archive file does not exist".to_string()
+        };
+        ui.set_status_message(status.into());
+        ui.set_show_context_menu_indicator(true);
+    }
+    
+    // Browse archive button
+    let ui_weak = ui.as_weak();
+    ui.on_browse_archive(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Archives", &["zip", "7z", "tar", "gz", "bz2", "xz", "rar"])
+                .add_filter("All files", &["*"])
+                .pick_file()
+            {
+                let archive_path = path.display().to_string();
+                ui.set_archive_path(archive_path.clone().into());
+                
+                // Auto-set extraction path based on archive location
+                if let Some(archive_path_obj) = Path::new(&archive_path).parent() {
+                    if let Some(filename) = Path::new(&archive_path).file_stem() {
+                        let extract_to = archive_path_obj
+                            .join(filename)
+                            .display()
+                            .to_string();
+                        ui.set_extract_to_path(extract_to.into());
+                    }
+                }
+                
+                ui.set_status_message("Archive selected. Choose extraction destination.".into());
+                ui.set_status_success(false);
+                ui.set_status_error(false);
+                ui.set_status_extracting(false);
+            }
+        }
+    });
+    
+    // Browse extract-to button
+    let ui_weak = ui.as_weak();
+    ui.on_browse_extract_to(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                ui.set_extract_to_path(path.display().to_string().into());
+            }
+        }
+    });
+    
+    // Extract button
+    let ui_weak = ui.as_weak();
+    let extraction_result_clone = Arc::clone(&extraction_result);
+    let progress_clone = Arc::clone(&progress);
+    let progress_message_clone = Arc::clone(&progress_message);
+    
+    ui.on_extract_archive(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            let archive_path = ui.get_archive_path().to_string();
+            let extract_to = ui.get_extract_to_path().to_string();
+            let password_str = ui.get_password().to_string();
+            let password = if password_str.is_empty() {
+                None
+            } else {
+                Some(password_str)
+            };
+            
+            ui.set_is_extracting(true);
+            ui.set_status_message("Starting extraction...".into());
+            ui.set_status_success(false);
+            ui.set_status_error(false);
+            ui.set_status_extracting(true);
+            *progress_clone.lock().unwrap() = 0.0;
+            *progress_message_clone.lock().unwrap() = "Preparing...".to_string();
+            
+            let result_arc = Arc::clone(&extraction_result_clone);
+            let progress_arc = Arc::clone(&progress_clone);
+            let progress_msg_arc = Arc::clone(&progress_message_clone);
+            let ui_weak_inner = ui.as_weak();
+            
+            // Create progress callback
+            let progress_callback: ProgressCallback = Arc::new(move |prog, message| {
+                *progress_arc.lock().unwrap() = prog;
+                *progress_msg_arc.lock().unwrap() = message.clone();
+                
+                // Update UI
+                if let Some(ui_inner) = ui_weak_inner.upgrade() {
+                    ui_inner.set_progress(prog);
+                    ui_inner.set_progress_message(message.into());
+                }
+            });
+            
+            // Run extraction in a separate thread
+            thread::spawn(move || {
+                let result = extract_archive(
+                    &archive_path,
+                    &extract_to,
+                    password.as_deref(),
+                    Some(progress_callback)
+                );
+                
+                let mapped_result = result.map_err(|e| e.to_string());
+                *result_arc.lock().unwrap() = Some(mapped_result);
+            });
+        }
+    });
+    
+    // Install context menu button
+    let ui_weak = ui.as_weak();
+    ui.on_install_context_menu(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            let message = match install_shell_integration() {
+                Ok(msg) => {
+                    ui.set_install_success(true);
+                    format!("✓ {}", msg)
+                },
+                Err(e) => {
+                    ui.set_install_success(false);
+                    format!("✗ Installation failed: {}", e)
+                },
+            };
+            ui.set_install_message(message.into());
+        }
+    });
+    
+    // Check for extraction completion periodically
+    let ui_weak = ui.as_weak();
+    let extraction_result_timer = Arc::clone(&extraction_result);
+    let progress_timer = Arc::clone(&progress);
+    let progress_message_timer = Arc::clone(&progress_message);
+    
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(100),
+        move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                if ui.get_is_extracting() {
+                    // Update progress UI
+                    let prog = *progress_timer.lock().unwrap();
+                    let prog_msg = progress_message_timer.lock().unwrap().clone();
+                    ui.set_progress(prog);
+                    ui.set_progress_message(prog_msg.into());
+                    
+                    // Check if extraction is complete
+                    if let Ok(mut result) = extraction_result_timer.try_lock() {
+                        if let Some(res) = result.take() {
+                            ui.set_is_extracting(false);
+                            ui.set_status_extracting(false);
+                            match res {
+                                Ok(_) => {
+                                    ui.set_status_message("✓ Extraction successful!".into());
+                                    ui.set_status_success(true);
+                                    ui.set_status_error(false);
+                                    ui.set_progress(100.0);
+                                    ui.set_progress_message("Completed!".into());
+                                }
+                                Err(e) => {
+                                    ui.set_status_message(format!("✗ Extraction failed: {}", e).into());
+                                    ui.set_status_success(false);
+                                    ui.set_status_error(true);
+                                    ui.set_progress(0.0);
+                                    ui.set_progress_message("Failed".into());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    );
+    
+    ui.run()?;
+    Ok(())
+}
+
+fn run_gui_with_file(archive_file: String) -> Result<(), Box<dyn Error>> {
+    run_gui(Some(archive_file))
 }
 
 
@@ -727,311 +910,3 @@ fn install_linux_shell_integration() -> Result<String, Box<dyn Error>> {
     Err("Linux shell integration is only available on Linux".into())
 }
 
-// GUI Application
-struct FerrisUnzipApp {
-    archive_path: String,
-    extract_to_path: String,
-    password: String,
-    status_message: String,
-    is_extracting: bool,
-    extraction_result: Arc<Mutex<Option<Result<(), String>>>>,
-    install_message: String,
-    progress: Arc<Mutex<f32>>,
-    progress_message: Arc<Mutex<String>>,
-    extraction_start_time: Option<Instant>,
-}
-
-impl Default for FerrisUnzipApp {
-    fn default() -> Self {
-        Self {
-            archive_path: String::new(),
-            extract_to_path: String::new(),
-            password: String::new(),
-            status_message: String::from("Select an archive file to extract"),
-            is_extracting: false,
-            extraction_result: Arc::new(Mutex::new(None)),
-            install_message: String::new(),
-            progress: Arc::new(Mutex::new(0.0)),
-            progress_message: Arc::new(Mutex::new(String::new())),
-            extraction_start_time: None,
-        }
-    }
-}
-
-impl FerrisUnzipApp {
-    fn new_with_file(archive_path: String) -> Self {
-        // Auto-set extraction path based on archive location
-        let extract_to_path = if let Some(archive_path_obj) = Path::new(&archive_path).parent() {
-            if let Some(filename) = Path::new(&archive_path).file_stem() {
-                archive_path_obj
-                    .join(filename)
-                    .display()
-                    .to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
-        let status_message = if Path::new(&archive_path).exists() {
-            format!("Archive loaded: {}. Ready to extract!", 
-                Path::new(&archive_path).file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy())
-        } else {
-            "Error: Selected archive file does not exist".to_string()
-        };
-
-        Self {
-            archive_path,
-            extract_to_path,
-            password: String::new(),
-            status_message,
-            is_extracting: false,
-            extraction_result: Arc::new(Mutex::new(None)),
-            install_message: String::new(),
-            progress: Arc::new(Mutex::new(0.0)),
-            progress_message: Arc::new(Mutex::new(String::new())),
-            extraction_start_time: None,
-        }
-    }
-
-    fn start_extraction(&mut self) {
-        self.is_extracting = true;
-        self.extraction_start_time = Some(Instant::now());
-        self.status_message = "Starting extraction...".to_string();
-        *self.progress.lock().unwrap() = 0.0;
-        *self.progress_message.lock().unwrap() = "Preparing...".to_string();
-        
-        let archive_path = self.archive_path.clone();
-        let extract_to = self.extract_to_path.clone();
-        let password = if self.password.is_empty() {
-            None
-        } else {
-            Some(self.password.clone())
-        };
-        let result_arc = Arc::clone(&self.extraction_result);
-        let progress_arc = Arc::clone(&self.progress);
-        let progress_msg_arc = Arc::clone(&self.progress_message);
-        
-        // Create progress callback
-        let progress_callback: ProgressCallback = Arc::new(move |progress, message| {
-            *progress_arc.lock().unwrap() = progress;
-            *progress_msg_arc.lock().unwrap() = message;
-        });
-        
-        // Run extraction in a separate thread
-        thread::spawn(move || {
-            let result = extract_archive(
-                &archive_path,
-                &extract_to,
-                password.as_deref(),
-                Some(progress_callback)
-            );
-            
-            let mapped_result = result.map_err(|e| e.to_string());
-            *result_arc.lock().unwrap() = Some(mapped_result);
-        });
-    }
-}
-
-impl eframe::App for FerrisUnzipApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check for extraction completion
-        if self.is_extracting {
-            if let Ok(mut result) = self.extraction_result.try_lock() {
-                if let Some(res) = result.take() {
-                    self.is_extracting = false;
-                    self.extraction_start_time = None;
-                    match res {
-                        Ok(_) => {
-                            self.status_message = "✓ Extraction successful!".to_string();
-                            *self.progress.lock().unwrap() = 100.0;
-                            *self.progress_message.lock().unwrap() = "Completed!".to_string();
-                        }
-                        Err(e) => {
-                            self.status_message = format!("✗ Extraction failed: {}", e);
-                            *self.progress.lock().unwrap() = 0.0;
-                            *self.progress_message.lock().unwrap() = "Failed".to_string();
-                        }
-                    }
-                }
-            }
-            ctx.request_repaint();
-        }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("FerrisUnzip - Archive Extractor");
-            
-            // Show context menu indicator if launched with a file
-            if !self.archive_path.is_empty() && self.status_message.contains("Archive loaded") {
-                ui.add_space(5.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(0, 120, 200), 
-                    "📂 Launched from context menu - archive pre-selected"
-                );
-            }
-            
-            ui.add_space(20.0);
-
-            // Archive file selection
-            ui.horizontal(|ui| {
-                ui.label("Archive file:");
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Archives", &["zip", "7z", "tar", "gz", "bz2", "xz", "rar"])
-                        .add_filter("All files", &["*"])
-                        .pick_file()
-                    {
-                        self.archive_path = path.display().to_string();
-                        
-                        // Auto-set extraction path based on archive location
-                        if let Some(archive_path_obj) = Path::new(&self.archive_path).parent() {
-                            if let Some(filename) = Path::new(&self.archive_path).file_stem() {
-                                self.extract_to_path = archive_path_obj
-                                    .join(filename)
-                                    .display()
-                                    .to_string();
-                            }
-                        }
-                        
-                        self.status_message = "Archive selected. Choose extraction destination.".to_string();
-                    }
-                }
-            });
-            
-            ui.horizontal(|ui| {
-                ui.label("Path:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.archive_path)
-                        .desired_width(350.0)
-                );
-            });
-
-            ui.add_space(15.0);
-
-            // Extraction directory selection
-            ui.horizontal(|ui| {
-                ui.label("Extract to:");
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.extract_to_path = path.display().to_string();
-                    }
-                }
-            });
-            
-            ui.horizontal(|ui| {
-                ui.label("Path:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.extract_to_path)
-                        .desired_width(350.0)
-                );
-            });
-
-            ui.add_space(15.0);
-
-            // Password field (for encrypted archives)
-            ui.horizontal(|ui| {
-                ui.label("Password (optional):");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.password)
-                        .password(true)
-                        .desired_width(250.0)
-                        .hint_text("Leave blank for non-encrypted archives")
-                );
-            });
-
-            ui.add_space(20.0);
-
-            // Progress bar (show when extracting)
-            if self.is_extracting {
-                ui.add_space(10.0);
-                ui.label("Extraction Progress:");
-                
-                let progress = *self.progress.lock().unwrap();
-                let progress_msg = self.progress_message.lock().unwrap().clone();
-                
-                ui.add(egui::ProgressBar::new(progress / 100.0).text(format!("{:.1}%", progress)));
-                ui.label(&progress_msg);
-                
-                // Show elapsed time
-                if let Some(start_time) = self.extraction_start_time {
-                    let elapsed = start_time.elapsed();
-                    ui.label(format!("Elapsed: {:.1}s", elapsed.as_secs_f32()));
-                }
-                
-                ui.add_space(10.0);
-            }
-
-            // Extract button
-            ui.horizontal(|ui| {
-                let can_extract = !self.archive_path.is_empty() 
-                    && !self.extract_to_path.is_empty() 
-                    && !self.is_extracting;
-                
-                if ui.add_enabled(can_extract, egui::Button::new("Extract Archive")).clicked() {
-                    self.start_extraction();
-                }
-                
-                // Quick Extract button for context menu usage
-                if can_extract && self.status_message.contains("Archive loaded") {
-                    ui.add_space(10.0);
-                    if ui.button("🚀 Quick Extract").clicked() {
-                        self.start_extraction();
-                    }
-                }
-                
-                if self.is_extracting {
-                    ui.spinner();
-                }
-            });
-
-            // Install button
-            ui.add_space(20.0);
-            if ui.button("Install into context menu (Right-click on files)").clicked() {
-                self.install_message = match install_shell_integration() {
-                    Ok(msg) => format!("✓ {}", msg),
-                    Err(e) => format!("✗ Installation failed: {}", e),
-                };
-            }
-
-            ui.add_space(15.0);
-
-            // Status message
-            ui.separator();
-            ui.add_space(10.0);
-            
-            let status_color = if self.status_message.starts_with("✓") {
-                egui::Color32::from_rgb(0, 150, 0)
-            } else if self.status_message.starts_with("✗") {
-                egui::Color32::from_rgb(200, 0, 0)
-            } else if self.status_message.contains("Extracting") {
-                egui::Color32::from_rgb(0, 100, 200)
-            } else {
-                egui::Color32::from_rgb(100, 100, 100)
-            };
-            
-            ui.colored_label(status_color, &self.status_message);
-
-            // Install message
-            if !self.install_message.is_empty() {
-                ui.add_space(5.0);
-                let install_color = if self.install_message.starts_with("✓") {
-                    egui::Color32::from_rgb(0, 150, 0)
-                } else {
-                    egui::Color32::from_rgb(200, 0, 0)
-                };
-                ui.colored_label(install_color, &self.install_message);
-            }
-
-            ui.add_space(15.0);
-
-            // Supported formats
-            ui.separator();
-            ui.add_space(10.0);
-            ui.label("Supported formats: ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, RAR");
-            ui.label("Version 1.0 - Cross-platform archive extractor");
-        });
-    }
-}

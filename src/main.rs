@@ -91,10 +91,11 @@ fn get_archive_type(path: &Path) -> ArchiveType {
 
 // Extract ZIP archive (non-encrypted) with progress tracking
 fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    try {
+    // Wrap the entire function in a comprehensive error handler
+    let result = (|| -> Result<(), Box<dyn Error>> {
         // Pre-extraction security validation
-    let archive_path_buf = Path::new(archive_path);
-    validate_archive_file(archive_path_buf)?;
+        let archive_path_buf = Path::new(archive_path);
+        validate_archive_file(archive_path_buf)?;
     
     let file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(file)?;
@@ -177,51 +178,72 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
         }
     }
     Ok(())
-} 
-catch(e) {
-    return Err(format!("Failed to extract ZIP archive: {}", e).into());
+    })();
+    
+    // Handle any errors that occurred during extraction
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract ZIP archive: {}", e);
+        eprintln!("ZIP extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Extract 7Z archive (supports encryption with password) with progress callback
 fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(archive);
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let path = Path::new(archive);
 
-    if let Some(ref callback) = progress_callback {
-        callback(10.0, "Initializing 7Z extraction...".to_string());
-    }
+        if let Some(ref callback) = progress_callback {
+            callback(10.0, "Initializing 7Z extraction...".to_string());
+        }
 
-    if let Some(pwd) = password {
-        let password = Password::from(pwd);
-        decompress_file_with_password(path, extract_to, password)?;
-    } else {
-        decompress_file_with_password(path, extract_to, Password::from(""))?;
-    }
+        if let Some(pwd) = password {
+            let password = Password::from(pwd);
+            decompress_file_with_password(path, extract_to, password)?;
+        } else {
+            decompress_file_with_password(path, extract_to, Password::from(""))?;
+        }
+        
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "7Z extraction completed".to_string());
+        }
+        Ok(())
+    })();
     
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "7Z extraction completed".to_string());
-    }
-    Ok(())
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract 7Z archive: {}", e);
+        eprintln!("7Z extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Extract plain TAR archive with progress callback
 fn extract_tar(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-try {
- let file = File::open(archive)?;
-    let mut archive = TarArchive::new(file);
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let mut archive = TarArchive::new(file);
 
-    if let Some(ref callback) = progress_callback {
-        callback(10.0, "Starting TAR extraction...".to_string());
-    }
+        if let Some(ref callback) = progress_callback {
+            callback(10.0, "Starting TAR extraction...".to_string());
+        }
+        
+        archive.unpack(extract_to)?;
+
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "TAR extraction completed".to_string());
+        }
+        Ok(())
+    })();
     
-    archive.unpack(extract_to)?;
-
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "TAR extraction completed".to_string());
-    }
-    Ok(())
-} catch(e) {
-    return Err(format!("Failed to extract TAR archive: {}", e).into());
-}
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract TAR archive: {}", e);
+        eprintln!("TAR extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
     
 
@@ -229,253 +251,352 @@ try {
 
 // Extract TAR archive with compression and progress callback
 fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read, progress_callback: Option<ProgressCallback>, format_name: &str) -> Result<(), Box<dyn Error>> {
-    let mut archive = TarArchive::new(decoder);
-    return Err(format!("Failed to extract TAR archive: {}", e).into());
-    }
-
-
-
-
-
-// Extract TAR archive with compression and progress callback
-fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read, progress_callback: Option<ProgressCallback>, format_name: &str) -> Result<(), Box<dyn Error>> {
-    let mut archive = TarArchive::new(decoder);
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let mut archive = TarArchive::new(decoder);
+        
+        if let Some(ref callback) = progress_callback {
+            callback(50.0, format!("Extracting {} archive...", format_name));
+        }
+        
+        archive.unpack(extract_to)?;
+        
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, format!("{} extraction completed", format_name));
+        }
+        Ok(())
+    })();
     
-    if let Some(ref callback) = progress_callback {
-        callback(50.0, format!("Extracting {} archive...", format_name));
-    }
-    
-    archive.unpack(extract_to)?;
-    
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, format!("{} extraction completed", format_name));
-    }
-    Ok(())
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract {} archive: {}", format_name, e);
+        eprintln!("{} extraction error: {}", format_name, error_msg);
+        error_msg.into()
+    })
 }
 
 // Extract TAR.GZ archive
 fn extract_tar_gz(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let decoder = GzDecoder::new(file);
-    extract_tar_compressed(extract_to, decoder, progress_callback, "TAR.GZ")
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let decoder = GzDecoder::new(file);
+        extract_tar_compressed(extract_to, decoder, progress_callback, "TAR.GZ")
+    })();
+    
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract TAR.GZ archive: {}", e);
+        eprintln!("TAR.GZ extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Extract TAR.BZ2 archive
 fn extract_tar_bz2(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let decoder = BzDecoder::new(file);
-    extract_tar_compressed(extract_to, decoder, progress_callback, "TAR.BZ2")
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let decoder = BzDecoder::new(file);
+        extract_tar_compressed(extract_to, decoder, progress_callback, "TAR.BZ2")
+    })();
+    
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract TAR.BZ2 archive: {}", e);
+        eprintln!("TAR.BZ2 extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Extract TAR.XZ archive
 fn extract_tar_xz(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let decoder = XzDecoder::new(file);
-    extract_tar_compressed(extract_to, decoder, progress_callback, "TAR.XZ")
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let decoder = XzDecoder::new(file);
+        extract_tar_compressed(extract_to, decoder, progress_callback, "TAR.XZ")
+    })();
+    
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract TAR.XZ archive: {}", e);
+        eprintln!("TAR.XZ extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Decompress single-file GZ with progress callback
 fn decompress_gz(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = GzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let mut decoder = GzDecoder::new(file);
+        let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+        
+        if let Some(ref callback) = progress_callback {
+            callback(25.0, "Decompressing GZ file...".to_string());
+        }
+        
+        let mut outfile = File::create(output_file)?;
+        io::copy(&mut decoder, &mut outfile)?;
+        
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "GZ decompression completed".to_string());
+        }
+        Ok(())
+    })();
     
-    if let Some(ref callback) = progress_callback {
-        callback(25.0, "Decompressing GZ file...".to_string());
-    }
-    
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "GZ decompression completed".to_string());
-    }
-    Ok(())
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to decompress GZ file: {}", e);
+        eprintln!("GZ decompression error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Decompress single-file BZ2 with progress callback
 fn decompress_bz2(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = BzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let mut decoder = BzDecoder::new(file);
+        let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+        
+        if let Some(ref callback) = progress_callback {
+            callback(25.0, "Decompressing BZ2 file...".to_string());
+        }
+        
+        let mut outfile = File::create(output_file)?;
+        io::copy(&mut decoder, &mut outfile)?;
+        
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "BZ2 decompression completed".to_string());
+        }
+        Ok(())
+    })();
     
-    if let Some(ref callback) = progress_callback {
-        callback(25.0, "Decompressing BZ2 file...".to_string());
-    }
-    
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "BZ2 decompression completed".to_string());
-    }
-    Ok(())
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to decompress BZ2 file: {}", e);
+        eprintln!("BZ2 decompression error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Decompress single-file XZ with progress callback
 fn decompress_xz(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
-    let mut decoder = XzDecoder::new(file);
-    let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let file = File::open(archive)?;
+        let mut decoder = XzDecoder::new(file);
+        let output_file = Path::new(extract_to).join(Path::new(archive).file_stem().ok_or("Invalid filename")?);
+        
+        if let Some(ref callback) = progress_callback {
+            callback(25.0, "Decompressing XZ file...".to_string());
+        }
+        
+        let mut outfile = File::create(output_file)?;
+        io::copy(&mut decoder, &mut outfile)?;
+        
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "XZ decompression completed".to_string());
+        }
+        Ok(())
+    })();
     
-    if let Some(ref callback) = progress_callback {
-        callback(25.0, "Decompressing XZ file...".to_string());
-    }
-    
-    let mut outfile = File::create(output_file)?;
-    io::copy(&mut decoder, &mut outfile)?;
-    
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "XZ decompression completed".to_string());
-    }
-    Ok(())
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to decompress XZ file: {}", e);
+        eprintln!("XZ decompression error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // Main extraction function with comprehensive security validation
 fn extract_archive(archive: &str, extract_to: &str, password: Option<&str>, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let path = Path::new(archive);
-    
-    // Comprehensive pre-extraction security validation
-    validate_archive_file(path)?;
-    
-    // Validate extraction directory
-    let extract_path = Path::new(extract_to);
-    if extract_path.exists() && !extract_path.is_dir() {
-        return Err("Extraction path exists but is not a directory".into());
-    }
-    
-    // Validate password if provided
-    if let Some(pwd) = password {
-        validate_password(pwd)?;
-    }
-    
-    // Create extraction directory with proper permissions
-    fs::create_dir_all(extract_path)?;
-    
-    // Check write permissions
-    if extract_path.metadata()?.permissions().readonly() {
-        return Err("Cannot write to extraction directory".into());
-    }
-    
-    // Estimate and validate disk space for large archives
-    let archive_size = std::fs::metadata(path)?.len();
-    // Conservative estimate: extracted size is typically 2-10x compressed size for large archives
-    let estimated_extraction_size = archive_size * 5; // Conservative 5x multiplier
-    check_available_disk_space(extract_path, estimated_extraction_size)?;
-
-    if let Some(ref callback) = progress_callback {
-        let archive_size_gb = std::fs::metadata(path)?.len() as f64 / (1024.0 * 1024.0 * 1024.0);
-        if archive_size_gb > 10.0 {
-            callback(0.0, format!("Security validation passed. Processing large archive ({:.1} GB)...", archive_size_gb));
-        } else {
-            callback(0.0, "Security validation passed, starting extraction...".to_string());
+    // Wrap the entire extraction process in comprehensive error handling
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let path = Path::new(archive);
+        
+        // Comprehensive pre-extraction security validation
+        validate_archive_file(path)?;
+        
+        // Validate extraction directory
+        let extract_path = Path::new(extract_to);
+        if extract_path.exists() && !extract_path.is_dir() {
+            return Err("Extraction path exists but is not a directory".into());
         }
-    }
+        
+        // Validate password if provided
+        if let Some(pwd) = password {
+            validate_password(pwd)?;
+        }
+        
+        // Create extraction directory with proper permissions
+        fs::create_dir_all(extract_path)?;
+        
+        // Check write permissions
+        if extract_path.metadata()?.permissions().readonly() {
+            return Err("Cannot write to extraction directory".into());
+        }
+        
+        // Estimate and validate disk space for large archives
+        let archive_size = std::fs::metadata(path)?.len();
+        // Conservative estimate: extracted size is typically 2-10x compressed size for large archives
+        let estimated_extraction_size = archive_size * 5; // Conservative 5x multiplier
+        check_available_disk_space(extract_path, estimated_extraction_size)?;
 
-    let archive_type = get_archive_type(path);
-    
-    // Execute extraction with appropriate security measures
-    let result = match archive_type {
-        ArchiveType::Zip => extract_zip(archive, extract_to, progress_callback.clone()),
-        ArchiveType::SevenZ => extract_7z(archive, extract_to, password, progress_callback.clone()),
-        ArchiveType::Tar => extract_tar(archive, extract_to, progress_callback.clone()),
-        ArchiveType::TarGz => extract_tar_gz(archive, extract_to, progress_callback.clone()),
-        ArchiveType::TarBz2 => extract_tar_bz2(archive, extract_to, progress_callback.clone()),
-        ArchiveType::TarXz => extract_tar_xz(archive, extract_to, progress_callback.clone()),
-        ArchiveType::Gz => decompress_gz(archive, extract_to, progress_callback.clone()),
-        ArchiveType::Bz2 => decompress_bz2(archive, extract_to, progress_callback.clone()),
-        ArchiveType::Xz => decompress_xz(archive, extract_to, progress_callback.clone()),
-        ArchiveType::Rar => extract_rar(archive, extract_to, progress_callback.clone()),
-        ArchiveType::Unknown => Err("Unsupported archive format - potential security risk".into()),
-    };
-    
-    // Post-extraction validation
-    if result.is_ok() {
+        if let Some(ref callback) = progress_callback {
+            let archive_size_gb = std::fs::metadata(path)?.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+            if archive_size_gb > 10.0 {
+                callback(0.0, format!("Security validation passed. Processing large archive ({:.1} GB)...", archive_size_gb));
+            } else {
+                callback(0.0, "Security validation passed, starting extraction...".to_string());
+            }
+        }
+
+        let archive_type = get_archive_type(path);
+        
+        // Execute extraction with appropriate security measures
+        let extraction_result = match archive_type {
+            ArchiveType::Zip => extract_zip(archive, extract_to, progress_callback.clone()),
+            ArchiveType::SevenZ => extract_7z(archive, extract_to, password, progress_callback.clone()),
+            ArchiveType::Tar => extract_tar(archive, extract_to, progress_callback.clone()),
+            ArchiveType::TarGz => extract_tar_gz(archive, extract_to, progress_callback.clone()),
+            ArchiveType::TarBz2 => extract_tar_bz2(archive, extract_to, progress_callback.clone()),
+            ArchiveType::TarXz => extract_tar_xz(archive, extract_to, progress_callback.clone()),
+            ArchiveType::Gz => decompress_gz(archive, extract_to, progress_callback.clone()),
+            ArchiveType::Bz2 => decompress_bz2(archive, extract_to, progress_callback.clone()),
+            ArchiveType::Xz => decompress_xz(archive, extract_to, progress_callback.clone()),
+            ArchiveType::Rar => extract_rar(archive, extract_to, progress_callback.clone()),
+            ArchiveType::Unknown => Err("Unsupported archive format - potential security risk".into()),
+        };
+        
+        // Handle extraction result
+        extraction_result?;
+        
+        // Post-extraction validation
         if let Some(ref callback) = progress_callback {
             callback(100.0, "Extraction completed successfully with security validation".to_string());
         }
-    }
+        
+        Ok(())
+    })();
     
-    result
+    // Handle any errors that occurred during the entire extraction process
+    result.map_err(|e| {
+        let error_msg = format!("Archive extraction failed: {}", e);
+        eprintln!("Critical extraction error: {}", error_msg);
+        
+        // Log additional context for debugging
+        eprintln!("Archive: {}", archive);
+        eprintln!("Extract to: {}", extract_to);
+        if password.is_some() {
+            eprintln!("Password provided: Yes");
+        }
+        
+        error_msg.into()
+    })
 }
 
 
 
-// Command-line interface
-
+// Command-line interface with comprehensive error handling
 fn run_cli() -> Result<(), Box<dyn Error>> {
-    let matches = Command::new("FerrisUnzip")
-        .version("1.0")
-        .about("Extracts various archive formats in Rust")
-        .arg(Arg::new("archive").help("Path to the archive file").required(true).index(1))
-        .arg(Arg::new("password").short('p').long("password").help("Password for encrypted archives").required(false))
-        .arg(Arg::new("cli").long("cli").help("Force CLI mode").action(clap::ArgAction::SetTrue))
-        .get_matches();
+    // Wrap entire CLI operation in error handling
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let matches = Command::new("FerrisUnzip")
+            .version("1.0")
+            .about("Extracts various archive formats in Rust")
+            .arg(Arg::new("archive").help("Path to the archive file").required(true).index(1))
+            .arg(Arg::new("password").short('p').long("password").help("Password for encrypted archives").required(false))
+            .arg(Arg::new("cli").long("cli").help("Force CLI mode").action(clap::ArgAction::SetTrue))
+            .get_matches();
 
-    let archive_path = matches.get_one::<String>("archive").unwrap();
-    let mut password = matches.get_one::<String>("password").map(|s| s.as_str());
+        let archive_path = matches.get_one::<String>("archive").unwrap();
+        let mut password = matches.get_one::<String>("password").map(|s| s.as_str());
 
-    // Prompt for extraction directory
-    print!("Where do you want to extract to? (Leave blank to extract where the file is): ");
-    io::stdout().flush()?;
-
-    let mut extract_to_str = String::new();
-    io::stdin().read_line(&mut extract_to_str)?;
-    let extract_to_str = extract_to_str.trim();
-
-    // Determine the extraction directory
-    let extract_to: PathBuf = if !extract_to_str.is_empty() {
-        PathBuf::from(extract_to_str)
-    } else {
-        let archive_path_obj = Path::new(archive_path);
-        let archive_dir = archive_path_obj.parent().ok_or("Invalid archive path: Unable to determine parent directory")?;
-        let archive_filename = archive_path_obj
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or("Invalid filename: Unable to extract file stem")?;
-        archive_dir.join(archive_filename)
-    };
-
-    // Create the extraction directory
-    fs::create_dir_all(&extract_to)?;
-
-    // Simple progress callback for CLI
-    let progress_callback: ProgressCallback = Arc::new(|progress, message| {
-        println!("[{:.1}%] {}", progress, message);
-    });
-
-    // Attempt extraction
-    let mut result = extract_archive(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback.clone()));
-
-    // Check for missing password error
-    if let Err(err) = &result {
-        if err.to_string().contains("Pass") {
-            // Prompt for password
-            print!("Password for encrypted archive: ");
-            io::stdout().flush()?;
-
-            let mut new_password = String::new();
-            io::stdin().read_line(&mut new_password)?;
-            password = Some(new_password.trim());
-
-            // Retry extraction with password
-            result = extract_archive(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback));
+        // Validate archive file exists
+        if !Path::new(archive_path).exists() {
+            return Err(format!("Archive file does not exist: {}", archive_path).into());
         }
-    }
 
-    // Handle final result
-    match result {
-        Ok(_) => println!("Extraction successful."),
-        Err(err) => eprintln!("Extraction failed: {}", err),
-    }
+        // Prompt for extraction directory
+        print!("Where do you want to extract to? (Leave blank to extract where the file is): ");
+        io::stdout().flush()?;
 
-    Ok(())
+        let mut extract_to_str = String::new();
+        io::stdin().read_line(&mut extract_to_str)?;
+        let extract_to_str = extract_to_str.trim();
+
+        // Determine the extraction directory
+        let extract_to: PathBuf = if !extract_to_str.is_empty() {
+            PathBuf::from(extract_to_str)
+        } else {
+            let archive_path_obj = Path::new(archive_path);
+            let archive_dir = archive_path_obj.parent().ok_or("Invalid archive path: Unable to determine parent directory")?;
+            let archive_filename = archive_path_obj
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("Invalid filename: Unable to extract file stem")?;
+            archive_dir.join(archive_filename)
+        };
+
+        // Create the extraction directory
+        fs::create_dir_all(&extract_to)?;
+
+        // Simple progress callback for CLI
+        let progress_callback: ProgressCallback = Arc::new(|progress, message| {
+            println!("[{:.1}%] {}", progress, message);
+        });
+
+        // Attempt extraction
+        let mut extraction_result = extract_archive(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback.clone()));
+
+        // Check for missing password error
+        if let Err(ref err) = extraction_result {
+            if err.to_string().contains("Pass") || err.to_string().contains("password") {
+                // Prompt for password
+                print!("Password for encrypted archive: ");
+                io::stdout().flush()?;
+
+                let mut new_password = String::new();
+                io::stdin().read_line(&mut new_password)?;
+                password = Some(new_password.trim());
+
+                // Retry extraction with password
+                extraction_result = extract_archive(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback));
+            }
+        }
+
+        // Handle final result
+        match extraction_result {
+            Ok(_) => {
+                println!("✅ Extraction successful!");
+                println!("Files extracted to: {}", extract_to.display());
+            }
+            Err(err) => {
+                eprintln!("❌ Extraction failed: {}", err);
+                return Err(err);
+            }
+        }
+
+        Ok(())
+    })();
+    
+    // Handle CLI-level errors
+    result.map_err(|e| {
+        let error_msg = format!("CLI operation failed: {}", e);
+        eprintln!("CLI Error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Set up panic handler for better error reporting
+    // Set up enhanced panic handler for better error reporting
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("CRITICAL ERROR: FerrisUnzip encountered a fatal error");
+        eprintln!("🚨 CRITICAL ERROR: FerrisUnzip encountered a fatal error");
         eprintln!("This may be due to a malformed archive or system resource limits.");
         
         if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
@@ -488,118 +609,146 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
         }
         
-        eprintln!("\nSecurity Note: This error was safely contained.");
+        eprintln!("\n🔒 Security Note: This error was safely contained.");
         eprintln!("No files were corrupted and no security breach occurred.");
-        eprintln!("\nTo prevent this error:");
+        eprintln!("\n💡 To prevent this error:");
         eprintln!("1. Ensure the archive file is not corrupted");
         eprintln!("2. Check available disk space");
         eprintln!("3. Try extracting to a different location");
         eprintln!("4. Use a smaller archive or extract fewer files");
+        eprintln!("5. Run with --cli flag for more detailed error information");
         
         std::process::exit(1);
     }));
     
-    let args: Vec<String> = std::env::args().collect();
-    
-    // Check if we have command-line arguments
-    if args.len() > 1 {
-        // Check for --cli flag or if multiple arguments (CLI mode)
-        if args.contains(&"--cli".to_string()) || args.len() > 2 {
-            // CLI mode
-            run_cli()
-        } else {
-            // GUI mode with file argument from context menu
-            let archive_file = &args[1];
-            
-            // Validate the file exists and is likely an archive
-            if !Path::new(archive_file).exists() {
-                eprintln!("Error: File '{}' does not exist", archive_file);
-                return Err("Invalid file path".into());
+    // Wrap main logic in comprehensive error handling
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let args: Vec<String> = std::env::args().collect();
+        
+        // Check if we have command-line arguments
+        if args.len() > 1 {
+            // Check for --cli flag or if multiple arguments (CLI mode)
+            if args.contains(&"--cli".to_string()) || args.len() > 2 {
+                // CLI mode with enhanced error handling
+                println!("🖥️  Starting FerrisUnzip in CLI mode...");
+                run_cli()
+            } else {
+                // GUI mode with file argument from context menu
+                let archive_file = &args[1];
+                
+                // Validate the file exists and is likely an archive
+                if !Path::new(archive_file).exists() {
+                    eprintln!("❌ Error: File '{}' does not exist", archive_file);
+                    return Err("Invalid file path".into());
+                }
+                
+                println!("🖼️  Starting FerrisUnzip in GUI mode with file: {}", archive_file);
+                
+                let options = eframe::NativeOptions {
+                    viewport: egui::ViewportBuilder::default()
+                        .with_inner_size([500.0, 400.0])
+                        .with_min_inner_size([400.0, 300.0])
+                        .with_title("FerrisUnzip - Extract Archive"),
+                    ..Default::default()
+                };
+                
+                eframe::run_native(
+                    "FerrisUnzip",
+                    options,
+                    Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::new_with_file(archive_file.clone())))),
+                ).map_err(|e| format!("Failed to run GUI: {}", e).into())
             }
+        } else {
+            // GUI mode without file
+            println!("🖼️  Starting FerrisUnzip in GUI mode...");
             
             let options = eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default()
                     .with_inner_size([500.0, 400.0])
                     .with_min_inner_size([400.0, 300.0])
-                    .with_title("FerrisUnzip - Extract Archive"),
+                    .with_title("FerrisUnzip - Archive Extractor"),
                 ..Default::default()
             };
             
             eframe::run_native(
                 "FerrisUnzip",
                 options,
-                Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::new_with_file(archive_file.clone())))),
+                Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
             ).map_err(|e| format!("Failed to run GUI: {}", e).into())
         }
-    } else {
-        // GUI mode without file
-        let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([500.0, 400.0])
-                .with_min_inner_size([400.0, 300.0]),
-            ..Default::default()
-        };
-        
-        eframe::run_native(
-            "FerrisUnzip",
-            options,
-            Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
-        ).map_err(|e| format!("Failed to run GUI: {}", e).into())
-    }
+    })();
+    
+    // Handle main-level errors
+    result.map_err(|e| {
+        let error_msg = format!("Application startup failed: {}", e);
+        eprintln!("🚨 Main Error: {}", error_msg);
+        eprintln!("💡 Try running with --cli flag for more information");
+        error_msg.into()
+    })
 }
 
 
 fn extract_rar(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let mut archive = Archive::new(archive_path).open_for_processing()?;
-    let mut file_count = 0;
-    let mut processed_count = 0;
+    // Wrap in error handling closure
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let mut archive = Archive::new(archive_path).open_for_processing()?;
+        let mut file_count = 0;
+        let mut processed_count = 0;
 
-    // Ensure the extraction directory exists
-    fs::create_dir_all(extract_to)?;
+        // Ensure the extraction directory exists
+        fs::create_dir_all(extract_to)?;
 
-    if let Some(ref callback) = progress_callback {
-        callback(5.0, "Starting RAR extraction...".to_string());
-    }
-
-    // First pass: count total files for progress tracking
-    let mut temp_archive = Archive::new(archive_path).open_for_processing()?;
-    while let Some(header) = temp_archive.read_header()? {
-        file_count += 1;
-        temp_archive = header.skip()?;
-    }
-
-    // Second pass: actual extraction with progress
-    while let Some(header) = archive.read_header()? {
-        let dest_path = Path::new(extract_to).join(header.entry().filename.to_string_lossy().as_ref());
-
-        if header.entry().is_directory() {
-            fs::create_dir_all(&dest_path)?;
-            archive = header.skip()?;
-        } else {
-            // Ensure parent directories exist
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            // Extract the file to the destination
-            archive = header.extract_to(&dest_path)?;
-        }
-        
-        processed_count += 1;
         if let Some(ref callback) = progress_callback {
-            let progress = if file_count > 0 { 
-                (processed_count as f32 / file_count as f32) * 100.0 
-            } else { 
-                50.0 
-            };
-            callback(progress, format!("Extracted {} of {} files from RAR", processed_count, file_count));
+            callback(5.0, "Starting RAR extraction...".to_string());
         }
-    }
 
-    if let Some(ref callback) = progress_callback {
-        callback(100.0, "RAR extraction completed".to_string());
-    }
+        // First pass: count total files for progress tracking
+        let mut temp_archive = Archive::new(archive_path).open_for_processing()?;
+        while let Some(header) = temp_archive.read_header()? {
+            file_count += 1;
+            temp_archive = header.skip()?;
+        }
 
-    Ok(())
+        // Second pass: actual extraction with progress
+        while let Some(header) = archive.read_header()? {
+            let dest_path = Path::new(extract_to).join(header.entry().filename.to_string_lossy().as_ref());
+
+            if header.entry().is_directory() {
+                fs::create_dir_all(&dest_path)?;
+                archive = header.skip()?;
+            } else {
+                // Ensure parent directories exist
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                // Extract the file to the destination
+                archive = header.extract_to(&dest_path)?;
+            }
+            
+            processed_count += 1;
+            if let Some(ref callback) = progress_callback {
+                let progress = if file_count > 0 { 
+                    (processed_count as f32 / file_count as f32) * 100.0 
+                } else { 
+                    50.0 
+                };
+                callback(progress, format!("Extracted {} of {} files from RAR", processed_count, file_count));
+            }
+        }
+
+        if let Some(ref callback) = progress_callback {
+            callback(100.0, "RAR extraction completed".to_string());
+        }
+
+        Ok(())
+    })();
+    
+    // Handle errors with detailed messaging
+    result.map_err(|e| {
+        let error_msg = format!("Failed to extract RAR archive: {}", e);
+        eprintln!("RAR extraction error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 // OS detection
@@ -623,15 +772,25 @@ fn detect_os() -> OperatingSystem {
     }
 }
 
-// Shell integration installation
+// Shell integration installation with error handling
 fn install_shell_integration() -> Result<String, Box<dyn Error>> {
-    let os = detect_os();
+    // Wrap in error handling closure
+    let result = (|| -> Result<String, Box<dyn Error>> {
+        let os = detect_os();
+        
+        match os {
+            OperatingSystem::Windows => install_windows_shell_integration(),
+            OperatingSystem::Linux => install_linux_shell_integration(),
+            _ => Err("Shell integration is currently only supported on Windows and Linux".into()),
+        }
+    })();
     
-    match os {
-        OperatingSystem::Windows => install_windows_shell_integration(),
-        OperatingSystem::Linux => install_linux_shell_integration(),
-        _ => Err("Shell integration is currently only supported on Windows and Linux".into()),
-    }
+    // Handle shell integration errors
+    result.map_err(|e| {
+        let error_msg = format!("Shell integration installation failed: {}", e);
+        eprintln!("Shell integration error: {}", error_msg);
+        error_msg.into()
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -812,7 +971,6 @@ struct FerrisUnzipApp {
     progress: Arc<Mutex<f32>>,
     progress_message: Arc<Mutex<String>>,
     extraction_start_time: Option<Instant>,
-    password_attempts: u8,
 }
 
 impl Default for FerrisUnzipApp {
@@ -854,13 +1012,13 @@ impl FerrisUnzipApp {
         let status_message = if Path::new(&archive_path).exists() {
             // Validate archive security
             match validate_archive_file(Path::new(&archive_path)) {
-                Ok(_) => format!("✅ Archive loaded: {}. Security validation passed!", 
+                Ok(_) => format!("Archive loaded: {}. Security validation passed!", 
                     Path::new(&archive_path).file_name()
                         .unwrap_or_default()
                         .to_string_lossy()),
                 Err(e) => {
                     security_warnings.push(format!("Security warning: {}", e));
-                    format!("⚠️  Archive loaded with warnings: {}. Check security status!", 
+                    format!("Archive loaded with warnings: {}. Check security status!", 
                         Path::new(&archive_path).file_name()
                             .unwrap_or_default()
                             .to_string_lossy())
@@ -1074,7 +1232,7 @@ impl eframe::App for FerrisUnzipApp {
                 // Quick Extract button for context menu usage
                 if can_extract && self.status_message.contains("Archive loaded") {
                     ui.add_space(10.0);
-                    if ui.button("🚀 Quick Extract").clicked() {
+                    if ui.button("Quick Extract").clicked() {
                         self.start_extraction();
                     }
                 }
@@ -1127,7 +1285,7 @@ impl eframe::App for FerrisUnzipApp {
             // Supported formats
             ui.separator();
             ui.add_space(10.0);
-            ui.label("Supported formats: ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, RAR");
+            ui.label("Supported formats: ZIP, 7Z, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, GZ, BZ2, XZ, RAR.");
             ui.label("Version 1.0 - Cross-platform archive extractor");
         });
     }
@@ -1425,7 +1583,6 @@ mod security_config {
     pub const MAX_PATH_DEPTH: usize = 100; // Deeper paths for complex archives
     
     // Password security
-    pub const MAX_PASSWORD_ATTEMPTS: u8 = 3;
     pub const MIN_PASSWORD_LENGTH: usize = 1;
     pub const MAX_PASSWORD_LENGTH: usize = 1024;
     

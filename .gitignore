@@ -15,3 +15,4 @@ MULTI_PLATFORM_BUILD.md
 releases/FerrisUnzip-linux-x64
 releases/FerrisUnzip-windows-native-x64.exe
 Cargo.lock
+src/FerrisUnzip.code-workspace

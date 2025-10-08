@@ -55,8 +55,8 @@ FerrisUnzip features a modern, user-friendly graphical interface built with egui
 
 ### 5. Status Messages
 - **Color-coded feedback**:
-  - Green (✓): Successful extraction
-  - Red (✗): Extraction errors
+  - Green: Successful extraction
+  - Red: Extraction errors
   - Blue: In progress
   - Gray: Informational messages
 

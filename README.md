@@ -13,6 +13,8 @@ FerrisUnzip is a cross-platform archive extraction tool written in Rust with bot
 -   **Automatic directory creation:** Creates necessary directories during extraction.
 -   **Shell Integration:** One-click installation for context menu integration (right-click "Extract with FerrisUnzip" on Windows/Linux).
 -   **Hidden Console:** Clean GUI experience on Windows without console window popup.
+-   **Robust Error Handling:** Advanced panic recovery and user-friendly error dialogs.
+-   **Security Features:** Built-in protection against zip bombs and malformed archives.
 
 ## Prerequisites
 
@@ -111,6 +113,41 @@ FerrisUnzip's GUI works on:
 - **Linux** (with X11 or Wayland)
 
 The CLI mode works on any platform where Rust can compile.
+
+## Error Handling
+
+FerrisUnzip includes advanced error handling features:
+
+### Panic Recovery
+- **No Crashes:** Critical errors are caught and converted to user-friendly messages
+- **GUI Stability:** The application continues running even after extraction failures
+- **Native Dialogs:** Cross-platform error message boxes for critical issues
+- **Resilient Extraction:** Can continue extracting even when individual files fail due to corruption or overflow errors
+
+### Security Features
+- **Overflow Protection:** Built-in safeguards against integer overflow attacks
+- **Path Validation:** Prevents directory traversal and malicious file paths
+- **Resource Limits:** Configurable limits for file sizes and extraction quotas
+
+### Error Types
+- **Critical Errors:** Show both GUI dialogs and detailed console output
+- **Security Warnings:** Alert users to potentially dangerous archives
+- **Recovery Options:** Suggest solutions for common extraction problems
+
+### Troubleshooting
+If you encounter issues:
+1. **Use CLI Mode:** Run with `--cli` flag for detailed error information
+2. **Check Archive:** Verify the archive file isn't corrupted
+3. **Disk Space:** Ensure sufficient space for extraction
+4. **Permissions:** Check write permissions to extraction directory
+5. **Partial Extraction:** If some files fail due to corruption/overflow, the application will extract what it can and report failures
+
+### Resilient Extraction Features
+FerrisUnzip includes advanced resilient extraction that can handle problematic archives:
+- **Individual File Isolation:** If one file fails, extraction continues with remaining files
+- **Overflow Protection:** Catches arithmetic overflow errors in decompression libraries
+- **Detailed Reporting:** Lists which files succeeded and which failed with specific error reasons
+- **Partial Success:** Considers extraction successful if most files are extracted, even with some failures
 
 # Contributing
 

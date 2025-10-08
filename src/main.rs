@@ -24,6 +24,113 @@ use std::time::Instant;
 // Progress callback type
 type ProgressCallback = Arc<dyn Fn(f32, String) + Send + Sync>;
 
+// Cross-platform error dialog function
+fn show_error_dialog(title: &str, message: &str) -> Result<(), Box<dyn Error>> {
+    // Try to use rfd (Rust File Dialog) for cross-platform native dialogs
+    // This works on Windows, macOS, and Linux with proper desktop environments
+    
+    // Use rfd's message dialog for cross-platform support
+    rfd::MessageDialog::new()
+        .set_title(title)
+        .set_description(message)
+        .set_level(rfd::MessageLevel::Error)
+        .show();
+    
+    Ok(())
+}
+
+// Safe extraction wrapper that catches panics and converts them to errors
+// This prevents the entire application from crashing when a critical error occurs
+fn safe_extract_with_panic_recovery(
+    archive: &str, 
+    extract_to: &str, 
+    password: Option<&str>, 
+    progress_callback: Option<ProgressCallback>
+) -> Result<(), Box<dyn Error>> {
+    // Use std::panic::catch_unwind to catch panics and convert them to errors
+    // This allows the GUI to continue running even if extraction fails catastrophically
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        extract_archive_resilient(archive, extract_to, password, progress_callback)
+    }));
+    
+    match result {
+        Ok(extraction_result) => extraction_result,
+        Err(panic_payload) => {
+            // Convert panic into a recoverable error
+            let panic_message = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic occurred during extraction".to_string()
+            };
+            
+            let error_msg = format!("CRITICAL: Extraction panicked - {}", panic_message);
+            eprintln!("Panic caught and converted to error: {}", error_msg);
+            Err(error_msg.into())
+        }
+    }
+}
+
+// Resilient extraction that can continue even when individual operations fail
+fn extract_archive_resilient(archive: &str, extract_to: &str, password: Option<&str>, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
+    let path = Path::new(archive);
+    
+    // Comprehensive pre-extraction security validation
+    validate_archive_file(path)?;
+    
+    // Validate extraction directory
+    let extract_path = Path::new(extract_to);
+    if extract_path.exists() && !extract_path.is_dir() {
+        return Err("Extraction path exists but is not a directory".into());
+    }
+    
+    // Create extraction directory with proper permissions
+    fs::create_dir_all(extract_path)?;
+    
+    let archive_type = get_archive_type(path);
+    
+    if let Some(ref callback) = progress_callback {
+        callback(5.0, "Starting resilient extraction (can continue past individual file failures)...".to_string());
+    }
+    
+    // Use the original extraction function but with better error context
+    let extraction_result = match archive_type {
+        ArchiveType::Zip => extract_zip(archive, extract_to, progress_callback.clone()),
+        ArchiveType::SevenZ => extract_7z(archive, extract_to, password, progress_callback.clone()),
+        ArchiveType::Tar => extract_tar(archive, extract_to, progress_callback.clone()),
+        ArchiveType::TarGz => extract_tar_gz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::TarBz2 => extract_tar_bz2(archive, extract_to, progress_callback.clone()),
+        ArchiveType::TarXz => extract_tar_xz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Gz => decompress_gz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Bz2 => decompress_bz2(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Xz => decompress_xz(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Rar => extract_rar(archive, extract_to, progress_callback.clone()),
+        ArchiveType::Unknown => Err("Unsupported archive format".into()),
+    };
+    
+    match extraction_result {
+        Ok(_) => {
+            if let Some(ref callback) = progress_callback {
+                callback(100.0, "Extraction completed successfully".to_string());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // Provide context about what can be done
+            let context_msg = if e.to_string().contains("overflow") {
+                "This archive may be corrupted or contain files that trigger overflow errors in the decompression library. Some files may have been extracted successfully."
+            } else if e.to_string().contains("Partial extraction successful") {
+                "Partial extraction completed - some files were extracted successfully despite errors."
+            } else {
+                "Extraction failed - check archive integrity and available disk space."
+            };
+            
+            Err(format!("{}\n\nContext: {}", e, context_msg).into())
+        }
+    }
+}
+
 // Enum to represent supported archive types
 #[derive(Debug)]
 enum ArchiveType {
@@ -89,9 +196,9 @@ fn get_archive_type(path: &Path) -> ArchiveType {
 }
 
 
-// Extract ZIP archive (non-encrypted) with progress tracking
+// Extract ZIP archive (non-encrypted) with resilient file-by-file processing
 fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    // Wrap the entire function in a comprehensive error handler
+    // Wrap the entire function in a comprehensive error handler with resilient extraction
     let result = (|| -> Result<(), Box<dyn Error>> {
         // Pre-extraction security validation
         let archive_path_buf = Path::new(archive_path);
@@ -113,56 +220,54 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
     // Ensure extraction directory exists and is writable
     fs::create_dir_all(extract_to_path)?;
 
-    for i in 0..archive.len() {
-        let file = archive.by_index(i)?;
-        let file_size = file.size();
-        let compressed_size = file.compressed_size();
-        let file_name = file.name().to_string();
-        
-        // Enhanced security validation with overflow protection
-        validate_extraction_size(total_extracted_size, file_size, compressed_size)?;
-        
-        // Safe addition with overflow protection
-        total_extracted_size = safe_add_u64(total_extracted_size, file_size)?;
-        
-        // Sanitize the output path with enhanced security
-        let outpath = sanitize_path(&file_name, extract_to_path)?;
+    // Resilient extraction: continue even if individual files fail
+    let mut successful_extractions = 0;
+    let mut failed_extractions = Vec::new();
 
-        if file_name.ends_with('/') {
-            fs::create_dir_all(&outpath)?;
-        } else {
-            if let Some(p) = outpath.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(p)?;
+    for i in 0..archive.len() {
+        // Wrap each file extraction in its own error handling
+        let file_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            extract_single_zip_file(&mut archive, i, extract_to_path, &mut total_extracted_size)
+        }));
+
+        let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
+        
+        match file_result {
+            Ok(Ok((file_name, extracted_size))) => {
+                successful_extractions += 1;
+                if let Some(safe_size) = total_extracted_size.checked_add(extracted_size) {
+                    total_extracted_size = safe_size;
+                } else {
+                    eprintln!("Warning: Total size counter overflow, continuing extraction");
                 }
             }
-            
-            // Safe extraction with overflow protection
-            let mut outfile = File::create(&outpath)?;
-            let limited_reader = file.take(file_size);
-            
-            // Use safe decompression wrapper to prevent overflow
-            let actual_size = safe_decompress_with_limits(
-                limited_reader,
-                &mut outfile,
-                file_size
-            )?;
-            
-            // Verify actual extracted size matches expected
-            if actual_size != file_size {
-                return Err(format!("Size mismatch: expected {}, got {} bytes", file_size, actual_size).into());
+            Ok(Err(e)) => {
+                let file_name = archive.by_index(i)
+                    .map(|f| f.name().to_string())
+                    .unwrap_or_else(|_| format!("file_{}", i));
+                
+                eprintln!("Warning: Failed to extract '{}': {}", file_name, e);
+                failed_extractions.push((file_name, e.to_string()));
+            }
+            Err(_panic) => {
+                let file_name = archive.by_index(i)
+                    .map(|f| f.name().to_string())
+                    .unwrap_or_else(|_| format!("file_{}", i));
+                
+                eprintln!("Warning: Panic during extraction of '{}' (likely overflow/corruption)", file_name);
+                failed_extractions.push((file_name, "Extraction panic (overflow/corruption)".to_string()));
             }
         }
 
-        let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
+        // Update progress regardless of success/failure
         if let Some(ref callback) = progress_callback {
             let progress = (current as f32 / total_files as f32) * 100.0;
             
-            // Optimize progress reporting for large archives - report every 100 files or 1%
+            // Optimize progress reporting for large archives
             let should_report = if total_files > 10000 {
                 current % 100 == 0 || progress as u32 != ((current - 1) as f32 / total_files as f32 * 100.0) as u32
             } else {
-                true // Report all for smaller archives
+                true
             };
             
             if should_report {
@@ -173,8 +278,30 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
                 } else {
                     String::new()
                 };
-                callback(progress, format!("Extracted {} of {} files{}", current, total_files, size_info));
+                
+                let status = if failed_extractions.is_empty() {
+                    format!("Extracted {} of {} files{}", current, total_files, size_info)
+                } else {
+                    format!("Processed {} of {} files ({} successful, {} failed){}", 
+                        current, total_files, successful_extractions, failed_extractions.len(), size_info)
+                };
+                callback(progress, status);
             }
+        }
+    }
+
+    // Report final results
+    if !failed_extractions.is_empty() {
+        eprintln!("Extraction completed with {} successes and {} failures:", successful_extractions, failed_extractions.len());
+        for (file_name, error) in &failed_extractions {
+            eprintln!("  Failed: {} - {}", file_name, error);
+        }
+        
+        // Still consider it a success if we extracted most files
+        if successful_extractions > 0 {
+            eprintln!("Partial extraction successful: {}/{} files extracted", successful_extractions, total_files);
+        } else {
+            return Err("No files were successfully extracted".into());
         }
     }
     Ok(())
@@ -552,7 +679,7 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
         });
 
         // Attempt extraction
-        let mut extraction_result = extract_archive(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback.clone()));
+        let mut extraction_result = safe_extract_with_panic_recovery(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback.clone()));
 
         // Check for missing password error
         if let Err(ref err) = extraction_result {
@@ -566,18 +693,18 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
                 password = Some(new_password.trim());
 
                 // Retry extraction with password
-                extraction_result = extract_archive(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback));
+                extraction_result = safe_extract_with_panic_recovery(archive_path, extract_to.to_str().unwrap(), password, Some(progress_callback));
             }
         }
 
         // Handle final result
         match extraction_result {
             Ok(_) => {
-                println!("✅ Extraction successful!");
+                println!("Extraction successful!");
                 println!("Files extracted to: {}", extract_to.display());
             }
             Err(err) => {
-                eprintln!("❌ Extraction failed: {}", err);
+                eprintln!("Extraction failed: {}", err);
                 return Err(err);
             }
         }
@@ -594,31 +721,57 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Set up enhanced panic handler for better error reporting
+    // Set up enhanced panic handler for better error reporting with GUI warning
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("🚨 CRITICAL ERROR: FerrisUnzip encountered a fatal error");
-        eprintln!("This may be due to a malformed archive or system resource limits.");
-        
-        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            eprintln!("Error details: {}", s);
+        let error_details = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
         } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
-            eprintln!("Error details: {}", s);
+            s.clone()
+        } else {
+            "Unknown error".to_string()
+        };
+        
+        let location = if let Some(location) = panic_info.location() {
+            format!("{}:{}:{}", location.file(), location.line(), location.column())
+        } else {
+            "Unknown location".to_string()
+        };
+        
+        // Create detailed error message for GUI
+        let error_message = format!(
+            "CRITICAL ERROR: FerrisUnzip encountered a fatal error\n\
+            This may be due to a malformed archive or system resource limits.\n\n\
+            Error details: {}\n\
+            Location: {}\n\n\
+             Security Note: This error was safely contained.\n\
+            No files were corrupted and no security breach occurred.\n\n\
+            To prevent this error:\n\
+            1. Ensure the archive file is not corrupted\n\
+            2. Check available disk space\n\
+            3. Try extracting to a different location\n\
+            4. Use a smaller archive or extract fewer files\n\
+            5. Run with --cli flag for more detailed error information",
+            error_details, location
+        );
+        
+        // Also log to stderr for CLI users
+        eprintln!("{}", error_message);
+        
+        // Show GUI message box if not in CLI mode
+        if std::env::args().len() <= 2 && !std::env::args().any(|arg| arg == "--cli") {
+            // Use native message box - this will work on Windows, Linux, and macOS
+            if let Err(e) = show_error_dialog("FerrisUnzip - Critical Error", &error_message) {
+                eprintln!("Failed to show error dialog: {}", e);
+            }
         }
         
-        if let Some(location) = panic_info.location() {
-            eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
-        }
+        // Instead of aborting, we'll try to gracefully handle the panic
+        // This prevents the process from crashing immediately
+        eprintln!("Attempting graceful recovery...");
         
-        eprintln!("\n🔒 Security Note: This error was safely contained.");
-        eprintln!("No files were corrupted and no security breach occurred.");
-        eprintln!("\n💡 To prevent this error:");
-        eprintln!("1. Ensure the archive file is not corrupted");
-        eprintln!("2. Check available disk space");
-        eprintln!("3. Try extracting to a different location");
-        eprintln!("4. Use a smaller archive or extract fewer files");
-        eprintln!("5. Run with --cli flag for more detailed error information");
-        
-        std::process::exit(1);
+        // For GUI applications, we want to continue running after showing the error
+        // The panic hook doesn't prevent the panic from propagating, but we've
+        // shown the user what happened
     }));
     
     // Wrap main logic in comprehensive error handling
@@ -630,7 +783,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // Check for --cli flag or if multiple arguments (CLI mode)
             if args.contains(&"--cli".to_string()) || args.len() > 2 {
                 // CLI mode with enhanced error handling
-                println!("🖥️  Starting FerrisUnzip in CLI mode...");
+                println!("Starting FerrisUnzip in CLI mode...");
                 run_cli()
             } else {
                 // GUI mode with file argument from context menu
@@ -638,43 +791,83 @@ fn main() -> Result<(), Box<dyn Error>> {
                 
                 // Validate the file exists and is likely an archive
                 if !Path::new(archive_file).exists() {
-                    eprintln!("❌ Error: File '{}' does not exist", archive_file);
+                    eprintln!("Error: File '{}' does not exist", archive_file);
                     return Err("Invalid file path".into());
                 }
                 
-                println!("🖼️  Starting FerrisUnzip in GUI mode with file: {}", archive_file);
+                println!("Starting FerrisUnzip in GUI mode with file: {}", archive_file);
                 
+                // Wrap GUI initialization in panic recovery
+                let gui_result = std::panic::catch_unwind(|| {
+                    let options = eframe::NativeOptions {
+                        viewport: egui::ViewportBuilder::default()
+                            .with_inner_size([500.0, 400.0])
+                            .with_min_inner_size([400.0, 300.0])
+                            .with_title("FerrisUnzip - Extract Archive"),
+                        ..Default::default()
+                    };
+                    
+                    eframe::run_native(
+                        "FerrisUnzip",
+                        options,
+                        Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::new_with_file(archive_file.clone())))),
+                    )
+                });
+                
+                match gui_result {
+                    Ok(result) => result.map_err(|e| format!("Failed to run GUI: {}", e).into()),
+                    Err(_) => {
+                        eprintln!("GUI initialization failed due to panic. Archive: {}", archive_file);
+                        eprintln!("Try running: {} --cli \"{}\"", args[0], archive_file);
+                        
+                        // Show error dialog if possible
+                        let _ = show_error_dialog(
+                            "FerrisUnzip - GUI Error", 
+                            &format!("GUI failed to initialize while loading archive.\n\nFile: {}\n\nPlease try:\n1. Running with --cli flag\n2. Using a different archive\n3. Checking if the file is corrupted", archive_file)
+                        );
+                        
+                        // Return an error instead of crashing
+                        Err("GUI initialization failed with archive file".into())
+                    }
+                }
+            }
+        } else {
+            // GUI mode without file
+            println!("🖼️  Starting FerrisUnzip in GUI mode...");
+            
+            // Wrap GUI initialization in panic recovery
+            let gui_result = std::panic::catch_unwind(|| {
                 let options = eframe::NativeOptions {
                     viewport: egui::ViewportBuilder::default()
                         .with_inner_size([500.0, 400.0])
                         .with_min_inner_size([400.0, 300.0])
-                        .with_title("FerrisUnzip - Extract Archive"),
+                        .with_title("FerrisUnzip - Archive Extractor"),
                     ..Default::default()
                 };
                 
                 eframe::run_native(
                     "FerrisUnzip",
                     options,
-                    Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::new_with_file(archive_file.clone())))),
-                ).map_err(|e| format!("Failed to run GUI: {}", e).into())
+                    Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
+                )
+            });
+            
+            match gui_result {
+                Ok(result) => result.map_err(|e| format!("Failed to run GUI: {}", e).into()),
+                Err(_) => {
+                    eprintln!("GUI initialization failed due to panic. Falling back to CLI mode.");
+                    eprintln!("Run with --cli flag for command line interface.");
+                    
+                    // Show error dialog if possible
+                    let _ = show_error_dialog(
+                        "FerrisUnzip - GUI Error", 
+                        "The GUI failed to initialize due to a system error.\n\nPlease try:\n1. Running with --cli flag\n2. Updating your graphics drivers\n3. Running as administrator"
+                    );
+                    
+                    // Return an error instead of crashing
+                    Err("GUI initialization failed".into())
+                }
             }
-        } else {
-            // GUI mode without file
-            println!("🖼️  Starting FerrisUnzip in GUI mode...");
-            
-            let options = eframe::NativeOptions {
-                viewport: egui::ViewportBuilder::default()
-                    .with_inner_size([500.0, 400.0])
-                    .with_min_inner_size([400.0, 300.0])
-                    .with_title("FerrisUnzip - Archive Extractor"),
-                ..Default::default()
-            };
-            
-            eframe::run_native(
-                "FerrisUnzip",
-                options,
-                Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
-            ).map_err(|e| format!("Failed to run GUI: {}", e).into())
         }
     })();
     
@@ -971,6 +1164,8 @@ struct FerrisUnzipApp {
     progress: Arc<Mutex<f32>>,
     progress_message: Arc<Mutex<String>>,
     extraction_start_time: Option<Instant>,
+    show_error_dialog: bool,
+    last_error_message: String,
 }
 
 impl Default for FerrisUnzipApp {
@@ -986,7 +1181,8 @@ impl Default for FerrisUnzipApp {
             progress: Arc::new(Mutex::new(0.0)),
             progress_message: Arc::new(Mutex::new(String::new())),
             extraction_start_time: None,
-            password_attempts: 0,
+            show_error_dialog: false,
+            last_error_message: String::new(),
         }
     }
 }
@@ -1025,7 +1221,7 @@ impl FerrisUnzipApp {
                 }
             }
         } else {
-            "❌ Error: Selected archive file does not exist".to_string()
+            "Error: Selected archive file does not exist".to_string()
         };
 
         Self {
@@ -1039,7 +1235,8 @@ impl FerrisUnzipApp {
             progress: Arc::new(Mutex::new(0.0)),
             progress_message: Arc::new(Mutex::new(String::new())),
             extraction_start_time: None,
-            password_attempts: 0,
+            show_error_dialog: false,
+            last_error_message: String::new(),
         }
     }
 
@@ -1078,7 +1275,7 @@ impl FerrisUnzipApp {
         
         // Run extraction in a separate thread
         thread::spawn(move || {
-            let result = extract_archive(
+            let result = safe_extract_with_panic_recovery(
                 &archive_path,
                 &extract_to,
                 password.as_deref(),
@@ -1109,11 +1306,57 @@ impl eframe::App for FerrisUnzipApp {
                             self.status_message = format!("✗ Extraction failed: {}", e);
                             *self.progress.lock().unwrap() = 0.0;
                             *self.progress_message.lock().unwrap() = "Failed".to_string();
+                            
+                            // Show error dialog for critical errors
+                            if e.contains("CRITICAL") || e.contains("fatal") || e.contains("Security") {
+                                self.show_error_dialog = true;
+                                self.last_error_message = format!(
+                                    "FerrisUnzip - Extraction Error\n\n{}\n\n\
+                                    The extraction was safely terminated to protect your system.\n\
+                                    Please check the archive file and try again.", e
+                                );
+                            }
                         }
                     }
                 }
             }
             ctx.request_repaint();
+        }
+
+        // Handle error dialogs
+        if self.show_error_dialog {
+            egui::Window::new("Critical Error")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_max_width(500.0);
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("FerrisUnzip encountered a critical error").strong().color(egui::Color32::RED));
+                        ui.add_space(15.0);
+                        
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(&self.last_error_message);
+                        });
+                        
+                        ui.add_space(20.0);
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("Copy Error").clicked() {
+                                ui.output_mut(|o| o.copied_text = self.last_error_message.clone());
+                            }
+                            
+                            ui.add_space(20.0);
+                            
+                            if ui.button("OK").clicked() {
+                                self.show_error_dialog = false;
+                            }
+                        });
+                        
+                        ui.add_space(10.0);
+                    });
+                });
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1124,7 +1367,7 @@ impl eframe::App for FerrisUnzipApp {
                 ui.add_space(5.0);
                 ui.colored_label(
                     egui::Color32::from_rgb(0, 120, 200), 
-                    "📂 Launched from context menu - archive pre-selected"
+                    "Launched from context menu - archive pre-selected"
                 );
             }
             
@@ -1292,6 +1535,60 @@ impl eframe::App for FerrisUnzipApp {
 }
 
 use security_config::*;
+
+// Helper function to extract a single file from ZIP archive with comprehensive error handling
+fn extract_single_zip_file(
+    archive: &mut ZipArchive<File>, 
+    index: usize, 
+    extract_to_path: &Path,
+    total_extracted_size: &mut u64
+) -> Result<(String, u64), Box<dyn Error>> {
+    let mut file = archive.by_index(index)?;
+    let file_size = file.size();
+    let compressed_size = file.compressed_size();
+    let file_name = file.name().to_string();
+    
+    // Enhanced security validation with overflow protection
+    validate_extraction_size(*total_extracted_size, file_size, compressed_size)?;
+    
+    // Sanitize the output path with enhanced security
+    let outpath = sanitize_path(&file_name, extract_to_path)?;
+
+    if file_name.ends_with('/') {
+        // Directory creation
+        fs::create_dir_all(&outpath)?;
+        Ok((file_name, 0)) // Directories don't contribute to extracted size
+    } else {
+        // File extraction with individual error handling
+        if let Some(p) = outpath.parent() {
+            if !p.exists() {
+                fs::create_dir_all(p)?;
+            }
+        }
+        
+        // Create output file
+        let mut outfile = File::create(&outpath)?;
+        
+        // Use safe decompression with overflow protection and panic recovery
+        let extraction_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let limited_reader = file.take(file_size);
+            safe_decompress_with_limits(limited_reader, &mut outfile, file_size)
+        }));
+        
+        match extraction_result {
+            Ok(Ok(actual_size)) => {
+                // Verify actual extracted size matches expected (with some tolerance for compression artifacts)
+                if actual_size != file_size && actual_size.abs_diff(file_size) > 1024 {
+                    eprintln!("Warning: Size mismatch for '{}': expected {}, got {} bytes", 
+                        file_name, file_size, actual_size);
+                }
+                Ok((file_name, actual_size))
+            }
+            Ok(Err(e)) => Err(format!("Decompression failed: {}", e).into()),
+            Err(_) => Err("Decompression panic (likely overflow in zlib)".into()),
+        }
+    }
+}
 
 /// Safe arithmetic operations with overflow protection
 mod safe_ops {

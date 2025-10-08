@@ -777,35 +777,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Wrap main logic in comprehensive error handling
     let result = (|| -> Result<(), Box<dyn Error>> {
         let args: Vec<String> = std::env::args().collect();
-
-        // Auto-extract if launched with a single file argument (right-click context menu)
-        if args.len() == 2 && !args.contains(&"--cli".to_string()) {
-            let archive_path = &args[1];
-            if !std::path::Path::new(archive_path).exists() {
-                return Err(format!("Archive file does not exist: {}", archive_path).into());
-            }
-            let archive_path_obj = std::path::Path::new(archive_path);
-            let archive_dir = archive_path_obj.parent().ok_or("Invalid archive path: Unable to determine parent directory")?;
-            let archive_filename = archive_path_obj.file_stem().ok_or("Invalid filename: Unable to extract file stem")?;
-            let extract_to = archive_dir.join(archive_filename);
-            std::fs::create_dir_all(&extract_to)?;
-            println!("[FerrisUnzip] Auto-extracting '{}' to '{}'...", archive_path, extract_to.display());
-            let progress_callback: ProgressCallback = Arc::new(|progress, message| {
-                println!("[{:.1}%] {}", progress, message);
-            });
-            let extraction_result = safe_extract_with_panic_recovery(archive_path, extract_to.to_str().unwrap(), None, Some(progress_callback));
-            match extraction_result {
-                Ok(_) => {
-                    println!("Extraction completed successfully.");
-                },
-                Err(err) => {
-                    eprintln!("Extraction failed: {}", err);
-                    let _ = show_error_dialog("FerrisUnzip - Extraction Error", &format!("Extraction failed: {}", err));
-                }
-            }
-            return Ok(());
-        }
-
+        
         // Check if we have command-line arguments
         if args.len() > 1 {
             // Check for --cli flag or if multiple arguments (CLI mode)
@@ -816,12 +788,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 // GUI mode with file argument from context menu
                 let archive_file = &args[1];
+                
                 // Validate the file exists and is likely an archive
                 if !Path::new(archive_file).exists() {
                     eprintln!("Error: File '{}' does not exist", archive_file);
                     return Err("Invalid file path".into());
                 }
+                
                 println!("Starting FerrisUnzip in GUI mode with file: {}", archive_file);
+                
+                // Wrap GUI initialization in panic recovery
                 let gui_result = std::panic::catch_unwind(|| {
                     let options = eframe::NativeOptions {
                         viewport: egui::ViewportBuilder::default()
@@ -830,21 +806,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .with_title("FerrisUnzip - Extract Archive"),
                         ..Default::default()
                     };
+                    
                     eframe::run_native(
                         "FerrisUnzip",
                         options,
                         Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::new_with_file(archive_file.clone())))),
                     )
                 });
+                
                 match gui_result {
                     Ok(result) => result.map_err(|e| format!("Failed to run GUI: {}", e).into()),
                     Err(_) => {
                         eprintln!("GUI initialization failed due to panic. Archive: {}", archive_file);
                         eprintln!("Try running: {} --cli \"{}\"", args[0], archive_file);
+                        
+                        // Show error dialog if possible
                         let _ = show_error_dialog(
                             "FerrisUnzip - GUI Error", 
                             &format!("GUI failed to initialize while loading archive.\n\nFile: {}\n\nPlease try:\n1. Running with --cli flag\n2. Using a different archive\n3. Checking if the file is corrupted", archive_file)
                         );
+                        
+                        // Return an error instead of crashing
                         Err("GUI initialization failed with archive file".into())
                     }
                 }
@@ -852,6 +834,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             // GUI mode without file
             println!("🖼️  Starting FerrisUnzip in GUI mode...");
+            
+            // Wrap GUI initialization in panic recovery
             let gui_result = std::panic::catch_unwind(|| {
                 let options = eframe::NativeOptions {
                     viewport: egui::ViewportBuilder::default()
@@ -860,21 +844,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .with_title("FerrisUnzip - Archive Extractor"),
                     ..Default::default()
                 };
+                
                 eframe::run_native(
                     "FerrisUnzip",
                     options,
                     Box::new(|_cc| Ok(Box::new(FerrisUnzipApp::default()))),
                 )
             });
+            
             match gui_result {
                 Ok(result) => result.map_err(|e| format!("Failed to run GUI: {}", e).into()),
                 Err(_) => {
                     eprintln!("GUI initialization failed due to panic. Falling back to CLI mode.");
                     eprintln!("Run with --cli flag for command line interface.");
+                    
+                    // Show error dialog if possible
                     let _ = show_error_dialog(
                         "FerrisUnzip - GUI Error", 
                         "The GUI failed to initialize due to a system error.\n\nPlease try:\n1. Running with --cli flag\n2. Updating your graphics drivers\n3. Running as administrator"
                     );
+                    
+                    // Return an error instead of crashing
                     Err("GUI initialization failed".into())
                 }
             }

@@ -91,7 +91,8 @@ fn get_archive_type(path: &Path) -> ArchiveType {
 
 // Extract ZIP archive (non-encrypted) with progress tracking
 fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    // Pre-extraction security validation
+    try {
+        // Pre-extraction security validation
     let archive_path_buf = Path::new(archive_path);
     validate_archive_file(archive_path_buf)?;
     
@@ -176,6 +177,9 @@ fn extract_zip(archive_path: &str, extract_to: &str, progress_callback: Option<P
         }
     }
     Ok(())
+} 
+catch(e) {
+    return Err(format!("Failed to extract ZIP archive: {}", e).into());
 }
 
 // Extract 7Z archive (supports encryption with password) with progress callback
@@ -201,20 +205,36 @@ fn extract_7z(archive: &str, extract_to: &str, password: Option<&str>, progress_
 
 // Extract plain TAR archive with progress callback
 fn extract_tar(archive: &str, extract_to: &str, progress_callback: Option<ProgressCallback>) -> Result<(), Box<dyn Error>> {
-    let file = File::open(archive)?;
+try {
+ let file = File::open(archive)?;
     let mut archive = TarArchive::new(file);
-    
+
     if let Some(ref callback) = progress_callback {
         callback(10.0, "Starting TAR extraction...".to_string());
     }
     
     archive.unpack(extract_to)?;
-    
+
     if let Some(ref callback) = progress_callback {
         callback(100.0, "TAR extraction completed".to_string());
     }
     Ok(())
+} catch(e) {
+    return Err(format!("Failed to extract TAR archive: {}", e).into());
 }
+}
+    
+
+
+
+// Extract TAR archive with compression and progress callback
+fn extract_tar_compressed(extract_to: &str, decoder: impl io::Read, progress_callback: Option<ProgressCallback>, format_name: &str) -> Result<(), Box<dyn Error>> {
+    let mut archive = TarArchive::new(decoder);
+    return Err(format!("Failed to extract TAR archive: {}", e).into());
+    }
+
+
+
 
 
 // Extract TAR archive with compression and progress callback
@@ -346,9 +366,9 @@ fn extract_archive(archive: &str, extract_to: &str, password: Option<&str>, prog
     if let Some(ref callback) = progress_callback {
         let archive_size_gb = std::fs::metadata(path)?.len() as f64 / (1024.0 * 1024.0 * 1024.0);
         if archive_size_gb > 10.0 {
-            callback(0.0, format!("🔒 Security validation passed. Processing large archive ({:.1} GB)...", archive_size_gb));
+            callback(0.0, format!("Security validation passed. Processing large archive ({:.1} GB)...", archive_size_gb));
         } else {
-            callback(0.0, "🔒 Security validation passed, starting extraction...".to_string());
+            callback(0.0, "Security validation passed, starting extraction...".to_string());
         }
     }
 
@@ -455,7 +475,7 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     // Set up panic handler for better error reporting
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("🚨 CRITICAL ERROR: FerrisUnzip encountered a fatal error");
+        eprintln!("CRITICAL ERROR: FerrisUnzip encountered a fatal error");
         eprintln!("This may be due to a malformed archive or system resource limits.");
         
         if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
@@ -468,7 +488,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Location: {}:{}:{}", location.file(), location.line(), location.column());
         }
         
-        eprintln!("\n🛡️  Security Note: This error was safely contained.");
+        eprintln!("\nSecurity Note: This error was safely contained.");
         eprintln!("No files were corrupted and no security breach occurred.");
         eprintln!("\nTo prevent this error:");
         eprintln!("1. Ensure the archive file is not corrupted");
@@ -792,7 +812,6 @@ struct FerrisUnzipApp {
     progress: Arc<Mutex<f32>>,
     progress_message: Arc<Mutex<String>>,
     extraction_start_time: Option<Instant>,
-    security_warnings: Vec<String>,
     password_attempts: u8,
 }
 
@@ -809,7 +828,6 @@ impl Default for FerrisUnzipApp {
             progress: Arc::new(Mutex::new(0.0)),
             progress_message: Arc::new(Mutex::new(String::new())),
             extraction_start_time: None,
-            security_warnings: Vec::new(),
             password_attempts: 0,
         }
     }
@@ -863,7 +881,6 @@ impl FerrisUnzipApp {
             progress: Arc::new(Mutex::new(0.0)),
             progress_message: Arc::new(Mutex::new(String::new())),
             extraction_start_time: None,
-            security_warnings,
             password_attempts: 0,
         }
     }
@@ -872,20 +889,15 @@ impl FerrisUnzipApp {
         // Security validation before starting extraction
         if !self.password.is_empty() {
             if let Err(e) = validate_password(&self.password) {
-                self.status_message = format!("❌ Password validation failed: {}", e);
+                self.status_message = format!("Password validation failed: {}", e);
                 return;
             }
             
-            self.password_attempts += 1;
-            if self.password_attempts > MAX_PASSWORD_ATTEMPTS {
-                self.status_message = "❌ Too many password attempts. Please restart the application.".to_string();
-                return;
-            }
         }
         
         self.is_extracting = true;
         self.extraction_start_time = Some(Instant::now());
-        self.status_message = "🔒 Security checks passed. Starting secure extraction...".to_string();
+        self.status_message = "Security checks passed. Starting secure extraction...".to_string();
         *self.progress.lock().unwrap() = 0.0;
         *self.progress_message.lock().unwrap() = "Validating security parameters...".to_string();
         
@@ -1131,18 +1143,11 @@ mod safe_ops {
     pub fn safe_add_u64(a: u64, b: u64) -> Result<u64, Box<dyn Error>> {
         a.checked_add(b).ok_or_else(|| "Integer overflow in size calculation".into())
     }
-    
-    pub fn safe_multiply_u64(a: u64, b: u64) -> Result<u64, Box<dyn Error>> {
-        a.checked_mul(b).ok_or_else(|| "Integer overflow in size multiplication".into())
-    }
-    
     pub fn safe_cast_usize_to_u64(value: usize) -> Result<u64, Box<dyn Error>> {
         u64::try_from(value).map_err(|_| "Size conversion overflow".into())
     }
     
-    pub fn safe_cast_u64_to_usize(value: u64) -> Result<usize, Box<dyn Error>> {
-        usize::try_from(value).map_err(|_| "Size conversion overflow - value too large for platform".into())
-    }
+ 
 }
 
 use safe_ops::*;
@@ -1343,7 +1348,7 @@ mod security {
         mut writer: W, 
         max_output_size: u64
     ) -> Result<u64, Box<dyn Error>> {
-        use std::io::Read;
+       
         
         const BUFFER_SIZE: usize = 64 * 1024; // 64KB buffer
         let mut buffer = vec![0u8; BUFFER_SIZE];
@@ -1440,5 +1445,3 @@ mod security_config {
         "ps1", "sh", "msi", "dll", "app", "deb", "rpm"
     ];
 }
-
-use security_config::*;

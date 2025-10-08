@@ -5,13 +5,29 @@ edition = "2018"
 
 [dependencies]
 clap = { version = "4.5.30", features = ["derive"] }
-zip = "4.2.0"
+zip = "5.1.1"
 sevenz-rust = { version = "0.6.1", features = ["aes256"] }
 tar = "0.4"
 flate2 = "1.0"
 bzip2 = "0.6.0"
 unrar = "0.5.8"
 liblzma = "0.4.1"
-eframe = "0.29"
-egui = "0.29"
-rfd = "0.15"
+eframe = { version = "0.32.3", optional = true }
+egui = { version = "0.32.3", optional = true }
+rfd = { version = "0.15", optional = true }
+
+# Optional features for different builds
+[features]
+default = ["gui"]
+gui = ["eframe", "egui", "rfd"]
+cli-only = []
+
+# Platform-specific dependencies
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows-specific dependencies can go here
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux-specific dependencies can go here
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS-specific dependencies can go here

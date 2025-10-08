@@ -833,7 +833,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         } else {
             // GUI mode without file
-            println!("🖼️  Starting FerrisUnzip in GUI mode...");
+            println!("Starting FerrisUnzip in GUI mode...");
             
             // Wrap GUI initialization in panic recovery
             let gui_result = std::panic::catch_unwind(|| {
@@ -874,8 +874,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Handle main-level errors
     result.map_err(|e| {
         let error_msg = format!("Application startup failed: {}", e);
-        eprintln!("🚨 Main Error: {}", error_msg);
-        eprintln!("💡 Try running with --cli flag for more information");
+        eprintln!("Main Error: {}", error_msg);
+        eprintln!("Try running with --cli flag for more information");
         error_msg.into()
     })
 }
@@ -1298,7 +1298,7 @@ impl eframe::App for FerrisUnzipApp {
                     self.extraction_start_time = None;
                     match res {
                         Ok(_) => {
-                            self.status_message = "✓ Extraction successful!".to_string();
+                            self.status_message = "Extraction successful!".to_string();
                             *self.progress.lock().unwrap() = 100.0;
                             *self.progress_message.lock().unwrap() = "Completed!".to_string();
                         }

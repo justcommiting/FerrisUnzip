@@ -1,3 +1,17 @@
 /target
 CONOUT$
 .vscode/launch.json
+build-targets.ps1
+build-targets.sh
+BUILD.md
+Cargo.lock
+
+cross-build.ps1
+docker-build.ps1
+Dockerfile.cross
+MULTI_PLATFORM_BUILD.md
+.cargo/config.toml
+.github/workflows/release.yml
+releases/FerrisUnzip-linux-x64
+releases/FerrisUnzip-windows-native-x64.exe
+Cargo.lock
